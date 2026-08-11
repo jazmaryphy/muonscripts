@@ -1,0 +1,53 @@
+&CONTROL
+  calculation = 'relax'
+  etot_conv_thr =   1.0000000000d-04
+  forc_conv_thr =   1.0000000000d-03
+  max_seconds = 604800
+  nstep = 300
+  outdir = '/scratch/jaz/SZRO_mono/dirtyaiida'
+  prefix = 'SZRO_mono_prim_chargepositive_ref1_r'
+  pseudo_dir = '/home/vol05/scarf795/pseudo/'
+  restart_mode = 'from_scratch'
+  tprnfor = .true.
+  tstress = .true.
+  verbosity = 'high'
+  wf_collect = .true.
+/
+&SYSTEM
+  degauss =   1.0000000000d-02
+  ecutrho =   9.0000000000d+02
+  ecutwfc =   1.0000000000d+02
+  ibrav = 0
+  nat = 161
+  nosym = .false.
+  ntyp = 5
+  occupations = 'smearing'
+  smearing = 'gaussian'
+  tot_charge =   1.0000000000d+00
+/
+&ELECTRONS
+  conv_thr =   1.0000000000d-07
+  electron_maxstep = 800
+  mixing_beta =   3.0000000000d-01
+  mixing_mode = 'local-TF'
+/
+&IONS
+/
+ATOMIC_SPECIES
+H      1.00794 H.pbe-rrkjus_psl.1.0.0.UPF
+O      15.9994 O.pbe-n-kjpaw_psl.0.1.UPF
+Re     186.207 Re_pbe_v1.2.uspp.F.UPF
+Sr     87.62 Sr_pbe_v1.uspp.F.UPF
+Zn     65.38 Zn_pbe_v1.uspp.F.UPF
+
+K_POINTS automatic
+2 2 2 0 0 0
+
+!K_POINTS gamma
+
+CELL_PARAMETERS (angstrom)
+     11.22799277         0.00000000         -0.01273776
+     0.00000000         11.16260000         0.00000000
+     0.00000000         0.00000000         15.77400000
+
+ATOMIC_POSITIONS (crystal)

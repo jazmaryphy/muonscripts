@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muonscripts"
+version = "0.1.0"
+description = "Utilities and scripts for muon simulation workflows"
+
+authors = [
+    {name="Muhammad Maikudi ISAH", email="muhammadmaikudi.isah@gmail.com"}
+]
+dependencies = [
+    "ase",
+    "numpy",
+    "scipy",
+    "mulfc",
+    "muesr",
+    "spglib",
+    "pyyaml",
+    "pymatgen",
+]
+[project.optional-dependencies]
+plot = [
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+

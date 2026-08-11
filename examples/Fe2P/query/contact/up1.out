@@ -1,0 +1,65 @@
+
+     Program POST-PROC v.7.5 starts on  7Aug2026 at 23:38:18 
+
+     This program is part of the open-source Quantum ESPRESSO suite
+     for quantum simulation of materials; please cite
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 21 395502 (2009);
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 29 465901 (2017);
+         "P. Giannozzi et al., J. Chem. Phys. 152 154105 (2020);
+          URL http://www.quantum-espresso.org", 
+     in publications or presentations arising from this work. More details at
+     http://www.quantum-espresso.org/quote
+
+     Parallel version (MPI & OpenMP), running on     192 processor cores
+     Number of MPI processes:                96
+     Threads/MPI process:                     2
+
+     MPI processes distributed on     1 nodes
+     R & G space division:  proc/nbgrp/npool/nimage =      96
+     1472545 MiB available memory on the printing compute node when the environment starts
+
+
+     Reading xml data from directory:
+
+     /scratch/jaz/Fe2P/scf1.save/
+     file Fe.pbe-spn-kjpaw_psl.0.2.1.UPF: wavefunction(s)  3D renormalized
+     file P.pbe-n-kjpaw_psl.1.0.0.UPF: wavefunction(s)  3S 3P renormalized
+     file H.pbe-kjpaw_psl.0.1.UPF: wavefunction(s)  1S renormalized
+
+     IMPORTANT: XC functional enforced from input :
+     Exchange-correlation= PBE
+                           (   1   4   3   4   0   0   0)
+     Any further DFT definition will be discarded
+     Please, verify this is what you really want
+
+
+     Parallelization info
+     --------------------
+     sticks:   dense  smooth     PW     G-vecs:    dense   smooth      PW
+     Min         283     113     29                33131     8379    1127
+     Max         284     114     30                33136     8386    1134
+     Sum       27175   10891   2869              3180745   804717  108573
+
+     Using Slab Decomposition
+
+
+     Check: negative core charge=   -0.000013
+
+     negative rho (up, down):  0.000E+00 1.151E-03
+
+     Calling punch_plot, plot_num =  17
+       Reconstructing all-electron valence charge.
+     Writing data to file  1.UP
+     Reading data from file  1.UP
+
+     Writing data to be plotted to file up1.xsf
+     Plot Type: 3D                     Output format: XCrySDen     
+
+     POST-PROC    :     14.91s CPU     24.85s WALL
+
+
+   This run was terminated on:  23:38:43   7Aug2026            
+
+=------------------------------------------------------------------------------=
+   JOB DONE.
+=------------------------------------------------------------------------------=

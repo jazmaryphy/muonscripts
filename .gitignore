@@ -1,0 +1,13 @@
+# Byte-compiled /cache / optimized / DLL files
+__pycache__/
+__pycache__/*
+*.py[cod]
+*$py.class
+.pytest_cache/
+muonscripts.egg-info/
+
+# Large data folder you want to ignore
+TODO/
+DATA/
+dft_tools/
+musr_tools/

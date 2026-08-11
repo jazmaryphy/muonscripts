@@ -1,0 +1,22 @@
+&inputpp
+    prefix='fe2p_scff1.r3'
+    outdir='/marconi_scratch/userexternal/misah000/scf/' 
+    filplot = 'fe2p.3up'
+    plot_num= 17
+    spin_component = 1
+/
+
+&plot
+  nfile=1
+  filepp(1)='fe2p.3up'
+  weight(1)=1.0
+  iflag=3
+  output_format=5
+  e1(1)=0.01,e1(2)=0.0,e1(3)=0.0,
+  e2(1)=0.0,e2(2)=0.01,e2(3)=0.0,
+  e3(1)=0.0,e3(2)=0.0,e3(3)=0.01,
+  x0(1)=0.0,
+  x0(2)=0.0,
+  x0(3)=0.0,
+  fileout='fe2p.3up.xsf'
+/

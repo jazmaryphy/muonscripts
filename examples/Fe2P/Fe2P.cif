@@ -1,0 +1,81 @@
+#------------------------------------------------------------------------------
+#$Date: 2024-05-16 09:36:09 +0300 (Thu, 16 May 2024) $
+#$Revision: 291877 $
+#$URL: file:///home/coder/svn-repositories/_RELOADED_COD/cod-reloaded/cif/9/01/26/9012616.cif $
+#------------------------------------------------------------------------------
+#
+# This file is available in the Crystallography Open Database (COD),
+# http://www.crystallography.net/. The original data for this entry
+# were provided the American Mineralogist Crystal Structure Database,
+# http://rruff.geo.arizona.edu/AMS/amcsd.php
+#
+# The file may be used within the scientific community so long as
+# proper attribution is given to the journal article from which the
+# data were obtained.
+#
+data_9012616
+loop_
+_publ_author_name
+'Fujii, H.'
+'Komura, S.'
+'Takeda, T.'
+'Okamoto, T.'
+'Ito, Y.'
+'Akimitsu, J.'
+_publ_section_title
+;
+ Polarized neutron diffraction study of Fe2P single crystal
+ Sample: T = 85 K
+;
+_journal_name_full               'Journal of the Physical Society of Japan'
+_journal_page_first              1616
+_journal_page_last               1621
+_journal_paper_doi               10.1143/JPSJ.46.1616
+_journal_volume                  46
+_journal_year                    1979
+_chemical_compound_source        Synthetic
+_chemical_formula_sum            'Fe2 P'
+_chemical_name_mineral           Barringerite
+_space_group_IT_number           189
+_symmetry_space_group_name_Hall  'P -6 -2'
+_symmetry_space_group_name_H-M   'P -6 2 m'
+_cell_angle_alpha                90
+_cell_angle_beta                 90
+_cell_angle_gamma                120
+_cell_length_a                   5.877
+_cell_length_b                   5.877
+_cell_length_c                   3.437
+_cell_formula_units_Z            3
+_cell_volume                     102.807
+_database_code_amcsd             0014171
+_diffrn_ambient_temperature      85
+_exptl_crystal_density_diffrn    6.913
+_cod_database_code               9012616
+loop_
+_space_group_symop_operation_xyz
+x,y,z
+-x,-x+y,z
+-x+y,-x,-z
+y,x,-z
+-y,x-y,z
+x-y,-y,z
+x,y,-z
+-x,-x+y,-z
+-x+y,-x,z
+y,x,z
+-y,x-y,-z
+x-y,-y,-z
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Fe1 0.25600 0.00000 0.00000
+Fe2 0.58900 0.00000 0.50000
+P1 0.33333 0.66667 0.00000
+P2 0.00000 0.00000 0.50000
+loop_
+_cod_related_entry_id
+_cod_related_entry_database
+_cod_related_entry_code
+1 AMCSD 0014171
