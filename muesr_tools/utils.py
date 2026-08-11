@@ -1,20 +1,15 @@
 # %%
+import spglib
 import numpy as np
 import numpy.typing as npt
-from typing import Sequence, Optional
+from collections import defaultdict
+from typing import Sequence, Optional, Union, Dict, List
+
+from ase import Atoms
 from pymatgen.core import Structure
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 from dataclasses import dataclass
-
-# %%
-def assign_label(index):
-    """Assign a label to the muon site."""
-    if index < 26:
-        return chr(65 + index) 
-    elif index < 52:
-        return chr(65 + index - 26) + "'" 
-    else:
-        return chr(65 + index - 52) + "''"
 
 # %%
 @dataclass(slots=True)
@@ -42,6 +37,163 @@ class LocalFieldResults:
     # Optional structural correction
     dipolar_correction: npt.NDArray[np.float64]
     dipolar_correction_norm: npt.NDArray[np.float64]
+
+# %%
+def _label_kinds(kind_symbols: Dict[int, str]) -> Dict[int, str]:
+    """
+    Helper to generate distinct labels for symmetry kinds.
+    
+    If an element symbol appears in multiple symmetry-inequivalent kinds, 
+    appends a 1-based index (e.g., 'Fe1', 'Fe2'). Otherwise, uses the plain symbol ('O').
+    """
+    symbol_counts = defaultdict(int)
+    for symbol in kind_symbols.values():
+        symbol_counts[symbol] += 1
+
+    labels = {}
+    current_indices = defaultdict(int)
+
+    for kind_id, symbol in kind_symbols.items():
+        if symbol_counts[symbol] > 1:
+            current_indices[symbol] += 1
+            labels[kind_id] = f"{symbol}{current_indices[symbol]}"
+        else:
+            labels[kind_id] = symbol
+
+    return labels
+
+
+def get_atom_kinds(
+    structure: Union[Structure, Atoms], 
+    symprec: float = 1e-3
+) -> Dict[str, List[int]]:
+    """
+    Group atoms into symmetry-equivalent kinds and label them by element.
+
+    Works with both pymatgen.core.Structure and ase.Atoms objects.
+
+    Args:
+        structure (Union[Structure, Atoms]): Structure to analyze.
+        symprec (float): Symmetry-detection tolerance for symmetry operations.
+
+    Returns:
+        Dict[str, List[int]]: Mapping from kind label to the list of 0-based 
+            atom indices belonging to that symmetry-equivalent kind. 
+            Labels are plain element symbols if unique (e.g., "O"), or suffixed 
+            with a 1-based index if multiple inequivalent sites exist (e.g., "Fe1", "Fe2").
+
+    Raises:
+        TypeError: If input structure type is not pymatgen Structure or ASE Atoms.
+        RuntimeError: If symmetry evaluation fails for ASE structures.
+    """
+    # 1. Extract equivalent site array and species symbols based on input type
+    if isinstance(structure, Structure):
+        analyzer = SpacegroupAnalyzer(structure, symprec=symprec)
+        equiv = analyzer.get_symmetry_dataset().equivalent_atoms
+        symbols = [site.specie.symbol for site in structure]
+
+    elif isinstance(structure, Atoms):
+        cell = (
+            structure.get_cell()[:],
+            structure.get_scaled_positions(),
+            structure.get_atomic_numbers(),
+        )
+        dataset = spglib.get_symmetry_dataset(cell, symprec=symprec)
+
+        if dataset is None:
+            raise RuntimeError(
+                f"spglib could not determine a symmetry dataset for this "
+                f"structure at symprec={symprec}."
+            )
+
+        equiv = (
+            dataset.equivalent_atoms
+            if hasattr(dataset, "equivalent_atoms")
+            else dataset["equivalent_atoms"]
+        )
+        symbols = structure.get_chemical_symbols()
+
+    else:
+        raise TypeError(
+            f"Unsupported structure type: {type(structure)}. "
+            "Must be a pymatgen Structure or ASE Atoms object."
+        )
+
+    # 2. Group atom indices by their representative (kind) index
+    kind_dict: Dict[int, List[int]] = defaultdict(list)
+    for i, k in enumerate(equiv):
+        kind_dict[int(k)].append(i)
+
+    # 3. Determine element symbols for each representative kind
+    kind_symbols = {k: symbols[k] for k in sorted(kind_dict)}
+
+    # 4. Generate labeled output mapping
+    labels = _label_kinds(kind_symbols)
+    return {labels[k]: kind_dict[k] for k in sorted(kind_dict)}
+
+# %%
+def check_site_distances(
+    structure: Structure,
+    sites: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Calculate nearest-neighbour distances from each candidate
+    site to every chemical species in the structure.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        For each species, an array containing the nearest distance
+        from every candidate site to that species.
+    """
+
+    species = list(dict.fromkeys(
+        site.species_string
+        for site in structure
+    ))
+
+    nearest_distances = {}
+
+    print("\nSite-distance diagnostics:")
+
+    for specie in species:
+
+        indices = [
+            i
+            for i, site in enumerate(structure)
+            if site.species_string == specie
+        ]
+
+        coords = structure.frac_coords[indices]
+
+        distances = structure.lattice.get_all_distances(
+            sites,
+            coords,
+        )
+
+        nearest = distances.min(axis=1)
+
+        nearest_distances[specie] = nearest
+
+        print(
+            f"{specie:>4s}: "
+            f"min = {nearest.min():.4f} Å, "
+            f"max = {nearest.max():.4f} Å, "
+            f"mean = {nearest.mean():.4f} Å, "
+            f"median = {np.median(nearest):.4f} Å"
+        )
+
+    return nearest_distances
+
+# %%
+def assign_label(index: str) -> str:
+    """Assign a label to the muon site."""
+    if index < 26:
+        return chr(65 + index) 
+    elif index < 52:
+        return chr(65 + index - 26) + "'" 
+    else:
+        return chr(65 + index - 52) + "''"
 
 # %%
 def _extract_muon(

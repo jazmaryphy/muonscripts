@@ -25,9 +25,9 @@ REF_COLORS = [
     ]
 
 # %%
-def style_axes(ax, fontsize=12):
+def style_axes(ax, fontsize=12, spline_lw=1.5):
     for spine in ax.spines.values():
-        spine.set_linewidth(1.5)
+        spine.set_linewidth(spline_lw)
 
     ax.minorticks_on()
 
@@ -52,6 +52,32 @@ def style_axes(ax, fontsize=12):
         width=1.0,
     )
 
+def fancy_style_axes(ax, fontsize=12, spline_lw=1.5):
+    for spine in ax.spines.values():
+        spine.set_linewidth(spline_lw)
+
+    ax.minorticks_on()
+
+    ax.tick_params(
+        axis="both",
+        which="major",
+        direction="in",
+        top=True,
+        right=True,
+        length=6,
+        width=1.0,
+        labelsize=fontsize,
+    )
+
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        direction="in",
+        top=True,
+        right=True,
+        length=3,
+        width=1.0,
+    )
 
 # %%
 def field_bar(
