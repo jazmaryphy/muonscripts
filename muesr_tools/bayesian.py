@@ -1,29 +1,9 @@
 # %%
 from __future__ import annotations
-import copy
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-from typing import Sequence, Optional, Tuple
-from collections import defaultdict
-
-from pymatgen.core import Structure
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-from scipy.stats import gaussian_kde
 from scipy.integrate import simpson
-
-# %%
-from constants import constants
-from muesr_tools.local_fields import pfields, rfields, multisite_pfields
-from muesr_tools.sample_candidate_sites import (
-    prune_atoms_too_close, 
-    sample_candidate_sites, 
-    find_equivalent_positions
-)
-
-GAMMA_MU = constants.MUON_GYROMAGNETIC_RATIO/constants.TWOPI
-GAMMA_MU *=1e-6 # MHz/T 
+from scipy.stats import gaussian_kde
 
 # %%
 try:
@@ -33,272 +13,293 @@ except ImportError:
     HAVE_EMCEE = False
 
 # %%
-
-
-# %%
-def get_atom_kinds_pymatgen(structure: Structure) -> dict[str, list[int]]:
-    """
-    Group atoms into symmetry-equivalent kinds and label them by element.
-
-    Args:
-        structure (pymatgen.Structure): Structure to analyze.
-
-    Returns:
-        dict[str, list[int]]: Mapping from kind label to the list of
-            0-based atom indices (matching `structure`) belonging to
-            that symmetry-equivalent kind. The label is the plain
-            element symbol (e.g. "Fe") if the structure has only one
-            symmetry-inequivalent site of that element, or the symbol
-            suffixed with a 1-based index (e.g. "Fe1", "Fe2", ...) if
-            there are several inequivalent sites of the same element --
-            matching the kind-labeling convention used in QE input files.
-    """
-    analyzer = SpacegroupAnalyzer(structure)
-    equiv = analyzer.get_symmetry_dataset().equivalent_atoms
-
-    # group atom indices by their representative (kind) index
-    kind_dict: dict[int, list[int]] = defaultdict(list)
-    for i, k in enumerate(equiv):
-        kind_dict[int(k)].append(i)
-
-    # element symbol for each kind, taken from its representative atom
-    kind_symbols = {k: structure[k].specie.symbol for k in kind_dict}
-
-    # how many distinct kinds share each element symbol
-    symbol_counts: dict[str, int] = defaultdict(int)
-    for sym in kind_symbols.values():
-        symbol_counts[sym] += 1
-
-    # assign labels: plain symbol if the element has only one kind,
-    # else symbol + 1-based index, ordered by representative atom index
-    labeled: dict[str, list[int]] = {}
-    symbol_running_count: dict[str, int] = defaultdict(int)
-    for k in sorted(kind_dict):
-        sym = kind_symbols[k]
-        if symbol_counts[sym] == 1:
-            label = sym
-        else:
-            symbol_running_count[sym] += 1
-            label = f"{sym}{symbol_running_count[sym]}"
-        labeled[label] = kind_dict[k]
-
-    return labeled
-
-# %%
-def calc_freqdistrib(
-    st: Structure,
-    magmoms: np.ndarray,
-    muon_sites: np.ndarray,
-    lorentz_factor: float = 0.0,
-    k: Optional[Sequence[float]] = None,
-    cont_field: float = 0.0,
-    sphere_radius: int = 100
-) -> np.ndarray:
-    """
-    Compute precession frequency per unit moment \nu/\mu (MHz / \mu_B).
-    """
-    result = multisite_pfields(
-        structure=st.copy(),  # Fixed structure argument reference
-        magmoms=magmoms,
-        muon_positions=muon_sites,
-        sphere_r=sphere_radius,
-        k=k,
-        cont_field=cont_field
-    )
-
-    # Total Dipolar + Lorentz field norm in Tesla per \mu_B
-    B = result.dipolar_norm + result.lorentz_norm * lorentz_factor
-
-    # Convert Tesla per \mu_B to MHz per \mu_B
-    nu_per_mu = B * GAMMA_MU
-    return nu_per_mu
-
-# %%
-def plot_distribution(ax, nu_per_mu):
-
-    ax.hist(nu_per_mu, bins=80, density=True, alpha=0.5)
-
-    xs = np.linspace(np.min(nu_per_mu), np.max(nu_per_mu), 1000)
-
-    kde = gaussian_kde(nu_per_mu)
-
-    ax.plot(xs, kde(xs),lw=2)
-
-    # ax.set_xlabel(r'$\nu/\mu$ (MHz/$\mu_B$)')
-    # ax.set_ylabel('Probability Density')
-
-    return ax
-
-
-def plot_posterior(ax, mu_grid, posterior):
-
-    ax.plot(mu_grid, posterior, lw=2)
-
-    # ax.set_xlabel(r'$\mu$ ($\mu_B$)')
-    # ax.set_ylabel(r'$g(\mu|\nu)$')
-
-    return ax
-
-# %% [markdown]
-# BAYESIAN ESTIMATOR
-
-# %%
 class BayesianMomentEstimator:
     """
-    Fast Bayesian moment estimator for determining g(\mu | \{\nu_i\}).
+    g(mu | {nu_i}) is obtained from f(nu/mu), the pdf of precession
+    frequency-per-unit-moment sampled at candidate muon sites.
+
+    Single frequency:
+        g(mu|nu) ~ (1/mu) f(nu/mu)
+
+    Multiple frequencies:
+        g(mu|{nu_i}) ~ prod_i  Integral_{nu_i-dnu_i}^{nu_i+dnu_i} f(nu'/mu) dnu'
+
+    pdf_method
+    ----------
+    "histogram" (default)
+        Piecewise-constant f(nu/mu) with an exact piecewise-linear CDF.
+        Used for the fast, exact grid-based posterior in `posterior()`.
+    "kde"
+        Smooth Gaussian-KDE estimate of f(nu/mu). Not needed for the
+        grid posterior, but useful as a continuous, differentiable
+        log-density when sampling with emcee (see `log_prob`).
     """
+
     def __init__(
         self, 
-        nu_per_mu: np.ndarray, 
-        num_kde_points: int = 1000
+        nu_per_mu, 
+        mu_max=1.0, 
+        bins=200,
+        pdf_method="histogram", 
+        num_kde_points=4000
     ):
-        self.nu_per_mu = np.asarray(nu_per_mu)
-        self.kde = gaussian_kde(self.nu_per_mu)
-        
-        # Pre-evaluate KDE over grid for fast interpolation
-        self.x_grid = np.linspace(
-            np.min(self.nu_per_mu)*0.8, np.max(self.nu_per_mu)*1.2, num_kde_points
-            )
-        self.f_grid = self.kde(self.x_grid)
+        self.nu_per_mu = np.asarray(nu_per_mu, dtype=float)
+        if self.nu_per_mu.ndim != 1:
+            raise ValueError("nu_per_mu must be 1-D.")
+        if len(self.nu_per_mu) < 2:
+            raise ValueError("Need at least two samples.")
+        if pdf_method not in {"histogram", "kde"}:
+            raise ValueError("pdf_method must be 'histogram' or 'kde'.")
 
-    def _f_val(
+        self.mu_max = float(mu_max)
+        self.pdf_method = pdf_method
+
+        # histogram representation (always built; cheap, and used
+        # by the fast grid-based posterior regardless of pdf_method)
+        self.hist_pdf, self.bin_edges = np.histogram(
+            self.nu_per_mu, bins=bins, density=True
+        )
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+        self.cdf = np.concatenate(
+            ([0.0], np.cumsum(self.hist_pdf * np.diff(self.bin_edges)))
+        )
+
+        # optional smooth KDE representation
+        if pdf_method == "kde":
+            self.kde = gaussian_kde(self.nu_per_mu)
+            self.x_grid = np.linspace(
+                max(self.nu_per_mu.min() * 0.5, 0.0),
+                self.nu_per_mu.max() * 1.5,
+                num_kde_points,
+            )
+            self.f_grid = self.kde(self.x_grid)
+            self.cdf_grid = np.zeros_like(self.x_grid)
+            self.cdf_grid[1:] = np.cumsum(
+                0.5 * (self.f_grid[1:] + self.f_grid[:-1])
+                * np.diff(self.x_grid)
+            )
+            if self.cdf_grid[-1] > 0:
+                self.cdf_grid /= self.cdf_grid[-1]
+
+
+    # f(nu/mu) evaluation (for plotting the *input* distribution)
+    def pdf_value(self, x):
+        """Evaluate f(nu/mu) using whichever representation was built."""
+        x = np.asarray(x, dtype=float)
+        if self.pdf_method == "kde":
+            return np.interp(x, self.x_grid, self.f_grid, left=0.0, right=0.0)
+
+        result = np.zeros_like(x, dtype=float)
+        inside = (x >= self.bin_edges[0]) & (x <= self.bin_edges[-1])
+        if np.any(inside):
+            idx = np.clip(
+                np.searchsorted(self.bin_edges, x[inside], side="right") - 1,
+                0, len(self.hist_pdf) - 1,
+            )
+            result[inside] = self.hist_pdf[idx]
+        return result
+    
+
+    def plot_distribution(
         self, 
-        x: np.ndarray
-    ) -> np.ndarray:
-        """Fast 1D linear interpolation of f(\nu/\mu)."""
-        return np.interp(x, self.x_grid, self.f_grid, left=0.0, right=0.0)
+        ax=None, 
+        label=None, 
+        show_kde=True,
+        color=None, 
+        **kwargs
+    ):
+        """
+        Plot the raw simulated f(nu/mu) distribution -- i.e. the
+        histogram of precession frequency per unit moment obtained
+        from the dipolar-field calculation at all candidate muon
+        sites. This is the *input* to Bayes' theorem (Blundell et al., 
+        Physica Procedia 2011), not the posterior.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 4))
+
+        ax.hist(
+            self.nu_per_mu, bins=self.bin_edges, density=True,
+            histtype="stepfilled", alpha=0.35, color=color,
+            label=label, **kwargs
+        )
+
+        if show_kde:
+            kde = gaussian_kde(self.nu_per_mu)
+            x = np.linspace(self.nu_per_mu.min(), self.nu_per_mu.max(), 500)
+            ax.plot(x, kde(x), color=color, lw=1.8)
+
+        # ax.set_xlabel(r"$\nu/\mu$  (MHz $\mu_B^{-1}$)")
+        # ax.set_ylabel(r"$f(\nu/\mu)$")
+
+        return ax
+
+
+    # CDF of f(nu/mu) (grid-based posterior machinery)
+    def _f_cdf(self, x):
+        x = np.asarray(x, dtype=float)
+        if self.pdf_method == "kde":
+            return np.interp(x, self.x_grid, self.cdf_grid, left=0.0, right=1.0)
+
+        result = np.zeros_like(x, dtype=float)
+        below = x <= self.bin_edges[0]
+        above = x >= self.bin_edges[-1]
+        middle = ~(below | above)
+        if np.any(middle):
+            xm = x[middle]
+            idx = np.clip(
+                np.searchsorted(self.bin_edges, xm, side="right") - 1,
+                0, len(self.hist_pdf) - 1,
+            )
+            result[middle] = (
+                self.cdf[idx] + self.hist_pdf[idx] * (xm - self.bin_edges[idx])
+            )
+        result[above] = 1.0
+        return result
+    
 
     def likelihood_single(
         self, 
-        nu: float, 
-        dnu: float, 
-        mu_grid: np.ndarray
-    ) -> np.ndarray:
-        """
-        Computes likelihood \int_{\nu-dnu}^{\nu+dnu} (1/\mu) f(\nu'/\mu) d\nu'
-        """
-        out = np.zeros_like(mu_grid, dtype=float)
-        nu_points = np.linspace(nu - dnu, nu + dnu, 50)
-        
-        for i, mu in enumerate(mu_grid):
-            if mu <= 0:
-                continue
-            integrand = (1.0 / mu) * self._f_val(nu_points / mu)
-            out[i] = simpson(integrand, x=nu_points)
-        return out
+        nu, 
+        dnu, 
+        mu_grid
+    ):
+        mu_grid = np.asarray(mu_grid, dtype=float)
+        L = np.zeros_like(mu_grid)
+        valid = (mu_grid > 0) & (mu_grid <= self.mu_max)
+        mu = mu_grid[valid]
+        lower, upper = (nu - dnu) / mu, (nu + dnu) / mu
+        L[valid] = mu * (self._f_cdf(upper) - self._f_cdf(lower))
+        return L
+    
 
     def posterior(
         self, 
-        frequencies: Sequence[float], 
-        errors: Sequence[float], 
-        mu_grid: np.ndarray
-    ) -> np.ndarray:
-        """
-        Computes posterior distribution g(\mu | \{\nu_i\}).
-        """
-        post = np.ones_like(mu_grid, dtype=float)
+        frequencies, 
+        errors, 
+        mu_grid
+    ):
+        """Exact grid-based posterior (recommended: fast, no convergence
+        diagnostics needed for this 1-parameter problem)."""
+        frequencies = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        errors = np.atleast_1d(np.asarray(errors, dtype=float))
+        mu_grid = np.asarray(mu_grid, dtype=float)
+
+        if frequencies.shape != errors.shape:
+            raise ValueError("frequencies and errors must match in shape.")
+
+        post = np.ones_like(mu_grid)
         for nu, dnu in zip(frequencies, errors):
             post *= self.likelihood_single(nu, dnu, mu_grid)
 
         norm = simpson(post, x=mu_grid)
-        if norm > 0:
-            post /= norm
-        return post
+        if norm <= 0:
+            raise ValueError("Posterior could not be normalized -- check "
+                              "that mu_grid/mu_max overlap the range "
+                              "implied by nu_per_mu.")
+        return post / norm
+    
 
     @staticmethod
-    def MAP(
-        mu_grid: np.ndarray, 
-        posterior: np.ndarray
-    ) -> float:
+    def MAP(mu_grid, posterior):
         return float(mu_grid[np.argmax(posterior)])
+    
 
     @staticmethod
-    def credible_interval(
-        mu_grid: np.ndarray, 
-        posterior: np.ndarray, 
-        confidence: float = 0.68
-    ) -> Tuple[float, float]:
-        cdf = np.cumsum(posterior)
+    def credible_interval(mu_grid, posterior, confidence=0.68):
+        cdf = np.zeros_like(posterior)
+        cdf[1:] = np.cumsum(
+            0.5 * (posterior[1:] + posterior[:-1]) * np.diff(mu_grid)
+        )
         if cdf[-1] > 0:
             cdf /= cdf[-1]
-        lower = (1.0 - confidence) / 2.0
-        upper = 1.0 - lower
-        lo = float(np.interp(lower, cdf, mu_grid))
-        hi = float(np.interp(upper, cdf, mu_grid))
-        return lo, hi
-
-# %% [markdown]
-# MCMC
-
-# %%
-class MomentMCMC:
-
-    def __init__(
-            self,
-            nu_per_mu,
-            frequencies,
-            frequency_errors):
-
-        if not HAVE_EMCEE:
-            raise ImportError(
-                "emcee must be installed."
-            )
-
-        self.freqs = np.asarray(frequencies)
-
-        self.errors = np.asarray(frequency_errors)
-
-        self.kde = gaussian_kde(nu_per_mu)
-
-    def log_prior(self, theta):
-
-        mu = theta[0]
-
-        if 0.01 < mu < 2.0:
-            return 0.0
-
-        return -np.inf
+        lo = np.interp((1 - confidence) / 2, cdf, mu_grid)
+        hi = np.interp(1 - (1 - confidence) / 2, cdf, mu_grid)
+        return float(lo), float(hi)
+    
 
 
-    def log_likelihood(self, theta):
-
-        mu = theta[0]
-
-        logL = 0.0
-
-        for nu, err in zip(self.freqs, self.errors):
-
-            xmin = (nu - err) / mu
-            xmax = (nu + err) / mu
-
-            P = self.kde.integrate_box_1d(xmin, xmax)
-
-            if P <= 0:
-                return -np.inf
-
-            logL += np.log(P / mu)
-
-        return logL
-
-
-    def log_probability(self, theta):
-
-        lp = self.log_prior(theta)
-
-        if not np.isfinite(lp):
+    # Optional: log-posterior + emcee sampler
+    def log_prob(
+        self, 
+        mu, 
+        frequencies, 
+        errors
+    ):
+        """
+        log g(mu | {nu_i}) up to a constant, uniform prior on
+        (0, mu_max]. Used only by the optional emcee sampler --
+        the grid-based `posterior()` above is the recommended,
+        exact route for this 1-D problem.
+        """
+        mu = float(mu) if np.ndim(mu) == 0 else float(mu[0])
+        if not (0.0 < mu <= self.mu_max):
             return -np.inf
 
-        return lp + self.log_likelihood(theta)
+        frequencies = np.atleast_1d(frequencies)
+        errors = np.atleast_1d(errors)
 
+        logp = 0.0
+        for nu, dnu in zip(frequencies, errors):
+            L = self.likelihood_single(nu, dnu, np.array([mu]))[0]
+            if L <= 0:
+                return -np.inf
+            logp += np.log(L)
+        return logp
 
-    def run(self, nwalkers=32, nsteps=10000):
+    def posterior_mcmc(
+        self, 
+        frequencies, 
+        errors, 
+        n_walkers=32,
+        n_steps=3000, 
+        burn_in=500, 
+        mu0=None, 
+        seed=0
+    ):
+        """
+        Cross-check the grid posterior with an emcee ensemble sampler.
+        Not required for this 1-D problem (grid quadrature is exact
+        and much cheaper) but provided for extension to multi-parameter
+        models.
+        """
+        if not HAVE_EMCEE:
+            raise ImportError(
+                "emcee is not installed. `pip install emcee` to use "
+                "posterior_mcmc(); the grid-based posterior() above "
+                "does not require it."
+            )
+
+        if self.pdf_method != "kde":
+            raise ValueError(
+                "posterior_mcmc requires pdf_method='kde' (the "
+                "histogram pdf is piecewise-constant with hard zero "
+                "plateaus, which trips up emcee's stretch move -- "
+                "instantiate this estimator with pdf_method='kde')."
+            )
+
+        rng = np.random.default_rng(seed)
+
+        if mu0 is None:
+            # rough starting guess: peak of the nu/mu distribution
+            # mapped through the first observed frequency
+            mu0 = float(np.atleast_1d(frequencies)[0] / self.x_grid[
+                np.argmax(self.f_grid)
+            ])
+            mu0 = min(max(mu0, 1e-3), self.mu_max * 0.9)
 
         ndim = 1
+        # small, well-scaled ball around mu0, on a relative (not
+        # absolute) scale so it works whether mu0 is 0.05 or 0.5
+        spread = max(1e-3, 0.05 * mu0)
+        p0 = mu0 + spread * rng.standard_normal((n_walkers, ndim))
+        p0 = np.clip(p0, 1e-4, self.mu_max - 1e-4)
 
-        p0 = np.random.uniform(0.05, 1.0, size=(nwalkers, ndim))
+        sampler = emcee.EnsembleSampler(
+            n_walkers, ndim, lambda theta: self.log_prob(theta, frequencies, errors)
+        )
+        sampler.run_mcmc(p0, n_steps, progress=False)
 
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_probability)
-
-        sampler.run_mcmc(p0, nsteps, progress=True)
-
-        return sampler
+        chain = sampler.get_chain(discard=burn_in, flat=True)[:, 0]
+        
+        return chain, sampler
