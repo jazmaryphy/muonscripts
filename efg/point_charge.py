@@ -88,7 +88,7 @@ def _replicate_lattice(
     nc = np.arange(-n_reps[2], n_reps[2] + 1)
     NA, NB, NC = np.meshgrid(na, nb, nc, indexing="ij")
     n_ints = np.stack([NA.ravel(), NB.ravel(), NC.ravel()], axis=1)  # (n_shifts, 3)
-    shifts = n_ints @ cell                                            # (n_shifts, 3), Angstrom
+    shifts = np.dot(n_ints, cell)                                    # (n_shifts, 3), Angstrom
 
     # Broadcast every shift against every kept atom in one shot: (n_shifts, n_keep, 3)
     pts = (kept_positions[None, :, :] + shifts[:, None, :]).reshape(-1, 3) * constants.ANGSTROM
@@ -159,15 +159,15 @@ def _efg_tensor_from_charges(
 
 # %%
 def point_charge_EFG(
-        atoms,
-        site_position,
-        charges,
-        sphere_radius=50,
-        exclude_indices=(),
-        extra_charges=None,
-        gamma_sternheimer=0.0,
-        verbose=True,
-    ):
+    atoms,
+    site_position,
+    charges,
+    sphere_radius=50,
+    exclude_indices=(),
+    extra_charges=None,
+    gamma_sternheimer=0.0,
+    verbose=True,
+):
     """Point-charge EFG tensor [V/m^2] at `site_position`, to any ASE structure 
     and any sphere_radius.
 
@@ -610,20 +610,20 @@ def build_point_charge_efg_neighbors(
 
 # %%
 def sphere_radius_convergence(
-        atoms, 
-        site_position, 
-        charges, 
-        exclude_indices=(), 
-        extra_charges=None, 
-        quadrupole_moment=1.0e-28,
-        sphere_radius_list=None, 
-        gamma_sternheimer=0.0,
-        conv_thr=1e-3, 
-        sphere_radius_step=10.0, 
-        sphere_radius_max=100.0,
-        num_conv_streak=3, 
-        ax=None
-    ):
+    atoms, 
+    site_position, 
+    charges, 
+    exclude_indices=(), 
+    extra_charges=None, 
+    quadrupole_moment=1.0e-28,
+    sphere_radius_list=None, 
+    gamma_sternheimer=0.0,
+    conv_thr=1e-3, 
+    sphere_radius_step=10.0, 
+    sphere_radius_max=100.0,
+    num_conv_streak=3, 
+    ax=None
+):
     """Check (and optionally plot) convergence of the point-charge EFG
     real-space sum with sphere_radius.
 
@@ -726,20 +726,20 @@ def sphere_radius_convergence(
 
 # %%
 def atom_dict_EFG(
-        atoms, 
-        site_position, 
-        label, 
-        spin, 
-        gamma, 
-        quadrupole_moment,
-        charges, 
-        sphere_radius=30, 
-        muon_position=None, 
-        exclude_indices=(), 
-        extra_charges=None, 
-        gamma_sternheimer=0.0, 
-        verbose=False
-    ):
+    atoms, 
+    site_position, 
+    label, 
+    spin, 
+    gamma, 
+    quadrupole_moment,
+    charges, 
+    sphere_radius=30, 
+    muon_position=None, 
+    exclude_indices=(), 
+    extra_charges=None, 
+    gamma_sternheimer=0.0, 
+    verbose=False
+):
     """One-call convenience: compute the lattice EFG (and, if
     mu_position is given, the muon-induced contribution too, kept in
     the SEPARATE 'OmegaQmu' key -- never merged into 'EFGTensor', to

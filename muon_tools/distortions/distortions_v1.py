@@ -9,11 +9,11 @@ the symmetry search (`get_structural_and_magnetic_ops`) across repeated
 calls for the same host -- and a plain dict does that job just as well,
 with far less ceremony:
 
-    from symmetry import get_structural_and_magnetic_ops
+    from muon_equivalent_sites import get_structural_and_magnetic_ops, generate_equivalent_muon_structures
 
     ops_info = get_structural_and_magnetic_ops(host_st, magmom=magmom)  # compute once
     for pristine, relaxed in my_relaxation_results:
-        sites = get_structs(
+        sites = generate_equivalent_muon_structures(
             pristine, relaxed, host_st, ops_info=ops_info  # reused, not recomputed
         )
 """
@@ -70,14 +70,12 @@ def get_structs(
     rlx_st: Structure,
     host_st: Structure,
     magmom: Optional[Moments] = None,
-    magmom_st: Optional[Structure] = None,
     muon_label: str = "H",
     muon_index: MuonSelect = "last",
     tol: float = 1e-3,
     symprec: float = 1e-3,
     min_distance: Optional[float] = 0.5,
     ops_info: Optional[SymmetryOpsInfo] = None,
-    auto_reorder: bool = False,
 ) -> List[EquivalentSite]:
     """For a single DFT-relaxed muon site, find every structurally- and/or
     magnetically-equivalent site and generate an approximate relaxed
@@ -99,17 +97,6 @@ def get_structs(
     magmom : array-like or None
         See `get_structural_and_magnetic_ops`. Ignored if `ops_info` is
         given.
-    magmom_st : pymatgen.core.Structure, optional
-        The structure `magmom` actually refers to (muon-free) -- e.g. the
-        primitive/conventional cell, if that's small enough to already
-        capture the true magnetic pattern (simple ferromagnetic order,
-        for instance). Only needs to be the larger DFT supercell if the
-        magnetic order breaks the primitive cell's own periodicity (e.g.
-        antiferromagnetic order that doubles it) -- the primitive cell
-        can't represent moments finer than its own periodicity, in which
-        case `magmom` must be sized to that larger structure instead.
-        Defaults to `host_structure` if omitted. Ignored if `ops_info` is
-        given.
     min_distance : float [Angstrom] or None, default=0.5
         Passed to `get_equivalent_sites`'s physical-distance cleanup pass.
         Set to None to skip it (fractional-tolerance-only dedup).
@@ -119,36 +106,24 @@ def get_structs(
         host (e.g. several relaxations of the same material) to skip
         redoing the symmetry search every time -- see the module
         docstring for the pattern.
-    auto_reorder : bool, default=False
-        Passed to `transplant_distortion` -- if True, an atom-order
-        mismatch between `pristine_structure` and `relaxed_structure` is
-        auto-corrected (displacement-minimizing, species-respecting
-        assignment) instead of raising. See `transplant_distortion` for
-        the correctness trade-off. Off by default.
-
 
     Returns
     -------
     list of EquivalentSite, one per equivalent site (including the
     original).
     """
-    # if ops_info is None:
-    #     check_st = p_st.copy()
-    #     check_idx = find_muon_index(check_st, muon_label=muon_label, which=muon_index)
-    #     ops_info = get_structural_and_magnetic_ops(host_st, magmom=magmom, symprec=symprec)
+
+    ### NOT GOO IDEA: one is is supercell the other is not
+    # if host_st.lattice != p_st.lattice:
+    #     raise ValueError(
+    #         "host_st's lattice does not match p_st's. "
+    #         "Symmetry operations are basis-dependent -- host_st must be "
+    #         "expressed in the SAME cell as p_st/rlx_st "
+    #         "(see geometry.build_matching_supercell if your host was solved as a primitive cell)."
+    #     )
 
     if ops_info is None:
-        if magmom_st is not None:
-            check_st = magmom_st.copy()
-            check_idx = find_muon_index(check_st, muon_label=muon_label, which=muon_index)
-            if check_idx is not None:
-                check_st.remove_sites([check_idx])
-        else:
-            check_st = host_st
-        ops_info = get_structural_and_magnetic_ops(
-            host_st, check_structure=check_st, magmom=magmom, symprec=symprec
-        )
-
+        ops_info = get_structural_and_magnetic_ops(host_st, magmom=magmom, symprec=symprec)
     struct_ops = ops_info["structural_ops"]
     magnetic_ops = ops_info["magnetic_ops"]
 
@@ -158,10 +133,10 @@ def get_structs(
     mu_frac = rlx_st.frac_coords[mu_idx]
 
     struct_sites = get_equivalent_sites(
-        mu_frac, struct_ops, lattice=host_st, tol=tol, min_distance=min_distance
+        mu_frac, struct_ops, tol=tol, lattice=host_st, min_distance=min_distance
     )
     magnetic_sites = get_equivalent_sites(
-        mu_frac, magnetic_ops, lattice=host_st, tol=tol, min_distance=min_distance
+        mu_frac, magnetic_ops, tol=tol, lattice=host_st, min_distance=min_distance
     )
 
     results: List[EquivalentSite] = []
@@ -176,8 +151,7 @@ def get_structs(
             ops_for_this_site = magnetic_ops if is_mag_equiv else struct_ops
             struct = transplant_distortion(
                 p_st, rlx_st, site, ops_for_this_site,
-                muon_label=muon_label, muon_index=muon_index, 
-                tol=tol, auto_reorder=auto_reorder,
+                muon_label=muon_label, muon_index=muon_index, tol=tol,
             )
 
         results.append(EquivalentSite(

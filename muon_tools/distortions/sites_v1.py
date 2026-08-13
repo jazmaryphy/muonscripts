@@ -8,15 +8,11 @@ atom in a structure is the muon.
 from __future__ import annotations
 
 import numpy as np
-import numpy.typing as npt
-from typing import Optional, Sequence, Tuple
- 
-from pymatgen.core import Structure
-from pymatgen.core.operations import SymmOp
-
+from typing import Optional
 
 from muon_tools.distortions.types import FracCoords, LatticeLike, MuonSelect
 from muon_tools.distortions.geometry import periodic_distance_matrix, as_lattice
+
 
 # %%
 def find_muon_index(
@@ -117,8 +113,8 @@ def prune_close_positions(
 def get_equivalent_sites(
     mu_frac: FracCoords, 
     sym_ops: Sequence[SymmOp], 
-    lattice: LatticeLike,
     tol: float = 1e-3,
+    lattice: Optional[LatticeLike] = None,
     min_distance: Optional[float] = None
 ) -> np.ndarray:
     """Orbit of fractional position `mu_frac` under symmetry operations
@@ -133,18 +129,18 @@ def get_equivalent_sites(
         Symmetry operations to apply, e.g. `structural_ops` or
         `magnetic_ops` from `get_structural_and_magnetic_ops`. Each `op`
         is applied once via `op.operate(mu_frac)
-    lattice : pymatgen.core.Lattice or pymatgen.core.Structure
-        If given together with `min_distance`, a further cleanup pass
-        runs via `prune_close_positions`, using the true periodic
-        (minimum-image) Cartesian distance -- matters for anisotropic
-        cells, where a fixed fractional tolerance corresponds to very
-        different real distances along different lattice vectors.
     tol : float, default=1e-3
         FRACTIONAL-coordinate tolerance for the first, cheap dedup pass.
         Not a physically uniform distance for an anisotropic cell -- fine
         for catching exact/near-exact symmetry-image duplicates, but see
         `lattice`/`min_distance` for the physically-correct cleanup that
         should generally follow it.
+    lattice : pymatgen.core.Lattice or pymatgen.core.Structure, optional
+        If given together with `min_distance`, a further cleanup pass
+        runs via `prune_close_positions`, using the true periodic
+        (minimum-image) Cartesian distance -- matters for anisotropic
+        cells, where a fixed fractional tolerance corresponds to very
+        different real distances along different lattice vectors.
     min_distance : float [Angstrom], optional
         Real-space merge threshold for the `lattice`-based cleanup pass.
 
@@ -153,26 +149,27 @@ def get_equivalent_sites(
     ndarray, shape (n_unique, 3)
         Unique equivalent fractional positions, including `mu_frac` itself.
     """
-    lat = as_lattice(lattice)
     mu_frac = np.asarray(mu_frac, dtype=float)
-    mu_cart = lat.get_cartesian_coords(mu_frac)
-    candidates = np.vstack(
-        [lat.get_fractional_coords(op.operate(mu_cart)) % 1.0 for op in sym_ops]
-        )
+    candidates = np.vstack([op.operate(mu_frac) % 1.0 for op in sym_ops])
 
     n = len(candidates)
     diff = (candidates[:, None, :] - candidates[None, :, :] + 0.5) % 1.0 - 0.5
     close = np.all(np.abs(diff) < tol, axis=-1)  # (n, n) symmetric bool
- 
+
     keep = np.ones(n, dtype=bool)
     for i in range(n):
         if not keep[i]:
             continue
         keep[np.where(close[i, i + 1:])[0] + i + 1] = False
     sites = candidates[keep]
- 
-    if min_distance is not None and len(sites) > 1:
-        keep_mask, _groups = prune_close_positions(sites, lat, min_distance=min_distance, energies=None)
+
+    if lattice is not None and min_distance is not None and len(sites) > 1:
+        keep_mask, _groups = prune_close_positions(
+            sites, 
+            lattice, 
+            min_distance=min_distance, 
+            energies=None
+        )
         sites = sites[keep_mask]
- 
+
     return sites
