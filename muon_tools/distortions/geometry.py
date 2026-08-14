@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+from ase import Atoms
 from pymatgen.core import Structure, Lattice
 
 from muon_tools.distortions.types import FracCoords, LatticeLike
@@ -24,8 +25,30 @@ def frac_periodic_close(a: FracCoords, b: FracCoords, tol: float) -> bool:
 
 
 def as_lattice(lattice_or_structure: LatticeLike) -> Lattice:
-    """Accept either a `Lattice` or a `Structure` (uses its `.lattice`)."""
-    return lattice_or_structure.lattice if hasattr(lattice_or_structure, "lattice") else lattice_or_structure
+    """
+    Accept a `Lattice`, PyMatGen `Structure`, or ASE `Atoms` 
+    and return a PyMatGen `Lattice`.
+    """
+
+    # 1. PyMatGen Structure or object with .lattice
+    if hasattr(lattice_or_structure, "lattice") and isinstance(
+        lattice_or_structure.lattice, Lattice
+    ):
+        return lattice_or_structure.lattice
+
+    # 2. Direct PyMatGen Lattice
+    if isinstance(lattice_or_structure, Lattice):
+        return lattice_or_structure
+
+    # 3. ASE Atoms object
+    if isinstance(lattice_or_structure, Atoms):
+        return Lattice(lattice_or_structure.cell.array)
+
+    # 4. Fail fast with a clear error
+    raise TypeError(
+        f"Expected a Lattice, Structure, or Atoms object, "
+        f"got {type(lattice_or_structure).__name__}"
+    )
 
 
 def periodic_distance_matrix(

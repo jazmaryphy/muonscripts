@@ -10,13 +10,14 @@ from __future__ import annotations
 from typing import List, Literal, TypedDict, Union
 
 import numpy.typing as npt
+from ase import Atoms
 from pymatgen.core import Lattice, Structure
 from pymatgen.core.operations import SymmOp
 
 # %%
 #: Anywhere a lattice is needed, a bare Lattice or a Structure (from
 #: which `.lattice` is used) are both accepted.
-LatticeLike = Union[Lattice, Structure]
+LatticeLike = Union[Lattice, Structure, Atoms]
 
 #: (3,) or (N, 3) array of fractional coordinates. `npt.ArrayLike` covers
 #: lists, tuples, and ndarrays alike -- callers aren't forced to pre-wrap

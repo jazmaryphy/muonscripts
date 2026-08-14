@@ -17,6 +17,7 @@ dependencies = [
     "mulfc",
     "muesr",
     "spglib",
+    "pyxtal",
     "pyyaml",
     "pymatgen",
 ]
