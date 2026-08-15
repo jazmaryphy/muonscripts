@@ -1,0 +1,56 @@
+&CONTROL
+        calculation = 'scf'
+          verbosity = 'high'
+       restart_mode = 'from_scratch'
+         wf_collect = .true.
+              nstep = 300
+            tstress = .true.
+            tprnfor = .true.
+             outdir = './'
+             prefix = 'scf_0.271_Tb2MnNiO6_nspin1'
+        max_seconds = 604800
+      etot_conv_thr = 0.0001
+      forc_conv_thr = 0.001
+         pseudo_dir = './'
+/
+
+&SYSTEM
+            ecutwfc = 60.0
+            ecutrho = 600.0
+        occupations = 'smearing'
+            degauss = 0.01
+           smearing = 'gaussian'
+               ntyp = 3
+                nat = 8
+              ibrav = 0
+/
+
+&ELECTRONS
+   electron_maxstep = 800
+           conv_thr = 1e-07
+        mixing_mode = 'local-TF'
+        mixing_beta = 0.3
+/
+
+ATOMIC_SPECIES
+Tb  158.92535  Tb.pbe-spn-kjpaw_psl.1.0.0.UPF
+Mn  54.938044  Mn.pbe-spn-kjpaw_psl.1.0.0.UPF
+Ni    58.6934  Ni.pbe-spn-kjpaw_psl.1.0.0.UPF
+
+K_POINTS automatic
+4  4  4  0  0  0
+
+CELL_PARAMETERS angstrom
+5.27277813579823  0.00000000000000  -0.01518455294373
+0.00000000000000  5.51810000000000   0.00000000000000
+0.00000000000000  0.00000000000000   7.51040000000000
+
+ATOMIC_POSITIONS crystal
+Tb  0.0170000000  0.0660000000   0.7490000000
+Tb  0.9830000000  0.9340000000   0.2510000000
+Tb  0.4830000000  0.5660000000   0.7510000000
+Tb  0.5170000000  0.4340000000   0.2490000000
+Mn  0.5000000000  0.0000000000  -0.0000000000
+Mn  0.0000000000  0.5000000000   0.5000000000
+Ni  0.5000000000  0.0000000000   0.5000000000
+Ni  0.0000000000  0.5000000000   0.0000000000

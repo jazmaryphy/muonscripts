@@ -1,8 +1,13 @@
 # %%
+from __future__ import annotations
+
+from typing import Any, Dict, List, Tuple, Union, Sequence
+
 import copy
 import warnings
 import itertools
 import numpy as np
+from ase import Atoms
 from constants import constants
 from io_tools.base import DFTCoordinates, fortran_value, find_first_index
 
@@ -688,3 +693,74 @@ def read_qe_xsf_datagrid(filename: str):
         )
 
     return values.reshape(dims, order="F")
+
+# %%
+def build_species_rename_map(
+    atoms: Atoms, 
+    kind_names: Sequence[str]
+) -> Dict[str, str]:
+    """Map ASE's own auto-generated QE species labels (e.g. 'Co', 'Co1')
+    to the desired kind_name scheme (e.g. 'Co1', 'Co2').
+
+    Parameters
+    ----------
+    atoms : ase.Atoms
+        The exact Atoms object passed to `ase.io.write(..., format="espresso-in", ...)`,
+        with `set_initial_magnetic_moments` already called on it.
+    kind_names : sequence of str
+        Per-atom kind names, same order as `atoms` (e.g. from
+        `new_structure.site_properties["kind_name"]`).
+
+    Returns
+    -------
+    dict mapping ASE's label -> desired label, ready for `relabel_qe_species`.
+    """
+    magmoms = atoms.get_initial_magnetic_moments()
+    seen: dict = {}
+    rename_map: Dict[str, str] = {}
+    for symbol, magmom, kind in zip(atoms.get_chemical_symbols(), magmoms, kind_names):
+        key = (symbol, magmom)
+        if key not in seen:
+            count_so_far = sum(1 for s, _ in seen if s == symbol)
+            ase_label = symbol if count_so_far == 0 else f"{symbol}{count_so_far}"
+            seen[key] = ase_label
+            rename_map[ase_label] = kind
+    return rename_map
+
+def relabel_qe_species(
+    filename: str, 
+    rename_map: Dict[str, str]
+) -> None:
+    """Rewrite only the species-label TOKEN (first whitespace-separated
+    field) on ATOMIC_SPECIES and ATOMIC_POSITIONS lines of a QE input
+    file, using `rename_map`. Every other line (namelists, K_POINTS,
+    CELL_PARAMETERS, comments, blank lines) is left untouched.
+    """
+    lines = open(filename).read().splitlines(keepends=True)
+    out = []
+    in_species_or_positions = False
+    for line in lines:
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith(("ATOMIC_SPECIES", "ATOMIC_POSITIONS")):
+            in_species_or_positions = True
+            out.append(line)
+            continue
+        if upper.startswith(("K_POINTS", "CELL_PARAMETERS", "CONSTRAINTS",
+                              "OCCUPATIONS", "ATOMIC_FORCES", "ADDITIONAL_K_POINTS")):
+            in_species_or_positions = False
+            out.append(line)
+            continue
+        if in_species_or_positions and stripped:
+            parts = line.split(None, 1)
+            label = parts[0]
+            if label in rename_map:
+                new_label = rename_map[label]
+                if len(parts) > 1:
+                    out.append(f"{new_label:<4}{parts[1]}")
+                else:
+                    out.append(f"{new_label}{line[len(line.rstrip()):]}")
+                continue
+        out.append(line)
+    with open(filename, "w") as f:
+        f.writelines(out)
