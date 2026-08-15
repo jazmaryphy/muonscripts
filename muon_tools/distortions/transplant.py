@@ -200,7 +200,14 @@ def transplant_distortion(
     p_st = p_st.copy()
     rlx_st = rlx_st.copy()
  
-    if p_st.lattice != rlx_st.lattice:
+    lattice_match = np.allclose(
+        p_st.lattice.matrix, 
+        rlx_st.lattice.matrix, 
+        rtol=0, 
+        atol=1e-3  # 0.01 Å threshold
+    )
+
+    if not lattice_match:
         raise ValueError(
             "p_st and rlx_st have different lattices -- they must be the SAME cell "
             "(the actual DFT relaxation cell) for per-atom displacement to be meaningful."
