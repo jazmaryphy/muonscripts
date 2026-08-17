@@ -221,6 +221,15 @@ for pos in candidate_sites:
 
 file='BNOO_randomsamples_muonsites.cif'
 file = os.path.join(dpath, file)
+
+p_stc = p_stc.copy()
+p_stc = Structure(
+    p_stc.lattice, 
+    p_stc.species, 
+    p_stc.frac_coords,
+    site_properties=p_stc.site_properties,   
+)
+
 p_stc.to(file)
 print(
     f"Saved candidate sites to "
@@ -515,3 +524,5 @@ else:
           "for this 1-D problem).")
 
 plt.show()
+
+# %%
