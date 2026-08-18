@@ -147,6 +147,8 @@ def write_pw_input(
     namelists = _merge_input_data(input_data)
  
     rename_map: Optional[Dict[str, str]] = None
+    qe_pseudos = dict(pseudopotentials) if pseudopotentials else {}
+
     if magmom is not None:
         rst = make_collinear_getmag_kind(structure, magmom=magmom, half=half)
         new_structure = rst["struct_magkind"]
@@ -157,8 +159,20 @@ def write_pw_input(
         per_atom_mag = [start_mg_dict.get(k, 0.0) for k in kind_names]
         atoms.set_initial_magnetic_moments(per_atom_mag)
  
-        namelists["SYSTEM"]["nspin"]=2
+        # Ensure SYSTEM namelist has nspin set unless user explicitly provided one
+        if "SYSTEM" not in namelists:
+            namelists["SYSTEM"] = {}
+        namelists["SYSTEM"].setdefault("nspin", 2)
+
         rename_map = build_species_rename_map(atoms, kind_names)
+
+        # # --- FIX: Map element-level pseudopotentials to kind names ---
+        # # For example, maps pseudopotentials["Fe"] to pseudopotentials["Fe1"], ["Fe2"], etc.
+        # for site, kind in zip(new_structure, kind_names):
+        #     elem = site.specie.symbol
+        #     if elem in qe_pseudos and kind not in qe_pseudos:
+        #         qe_pseudos[kind] = qe_pseudos[elem]
+
     else:
         # 1. Force-clear initial magnetic moments on the ASE Atoms instance
         # so ASE's writer does not auto-generate starting_magnetization(i)
@@ -179,7 +193,7 @@ def write_pw_input(
         atoms=atoms,
         # format="espresso-in",
         input_data=namelists,
-        pseudopotentials=pseudopotentials,
+        pseudopotentials=qe_pseudos,
         kspacing=kspacing,
         kpts=kpts,
         koffset=koffset,
