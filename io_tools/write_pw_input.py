@@ -45,6 +45,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 from io_tools.qe_format import relabel_qe_species
 from io_tools.qe_format import build_species_rename_map 
 from io_tools.qe_format import format_qe_file_centralized
+from symmetry.magnetism import prepare_structure
 from symmetry.magnetism import make_collinear_getmag_kind
 
 # %%
@@ -88,7 +89,7 @@ def _merge_input_data(
     return merged
 
 # %%
-def write_pw_input(
+def write_pw_input2(
     filename: str,
     structure: Structure,
     magmom: Optional[Sequence[Any]] = None,
@@ -180,6 +181,119 @@ def write_pw_input(
             atoms.set_initial_magnetic_moments([0.0] * len(atoms))
 
         # 2. Strip any accidental magnetic parameters from the SYSTEM namelist
+        system_namelist = namelists.get("SYSTEM", {})
+        system_namelist.pop("nspin", None)
+        
+        # Remove any lingering starting_magnetization keys
+        keys_to_remove = [k for k in system_namelist if k.startswith("starting_magnetization")]
+        for key in keys_to_remove:
+            system_namelist.pop(key, None)
+ 
+    write_espresso_in(
+        filename,
+        atoms=atoms,
+        # format="espresso-in",
+        input_data=namelists,
+        pseudopotentials=qe_pseudos,
+        kspacing=kspacing,
+        kpts=kpts,
+        koffset=koffset,
+        crystal_coordinates=crystal_coordinates,
+    )
+ 
+    if rename_map is not None:
+        relabel_qe_species(filename, rename_map)
+ 
+    if centralized:
+        format_qe_file_centralized(filename, indent=indent)
+
+# %%
+def write_pw_input(
+    filename: str,
+    structure: Structure,
+    magmom: Optional[Sequence[Any]] = None,
+    pseudopotentials: Dict[str, str] = None,
+    half: bool = True,
+    input_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    kpts: Optional[Tuple[int, int, int]] = None,
+    kspacing: Optional[float] = None,
+    koffset: Tuple[int, int, int] = (0, 0, 0),
+    crystal_coordinates: bool = True,
+    centralized: bool = True,
+    indent: int = 3,
+) -> None:
+    """Write a QE pw.x input file, magnetic or not.
+ 
+    Parameters
+    ----------
+    filename : str
+         A file to which the input is written.
+    structure : pymatgen.core.Structure
+        Structure to write (muon-free host, or with muon included --
+        whatever you want in the file; no muon-specific handling here).
+    pseudopotentials : dict
+        Keyed by REAL element symbol (e.g. {"Co": "...", "F": "..."}) --
+        NOT by kind name, regardless of whether `magmom` is given.
+    magmom : sequence, optional
+        Per-atom magnetic moments (floats, 3-vectors, or Magmom objects),
+        same order as `structure`. None (default) -> non-magnetic write,
+        nothing magnetic gets touched. Given -> collinear kind-name
+        magnetization is computed and applied automatically; `nspin=2`
+        is set in SYSTEM unless `input_data['SYSTEM']['nspin']` already
+        specifies one.
+    half : bool, default=True
+        Passed to `make_collinear_getmag_kind` -- normalize non-zero
+        moments to +/-0.5 (typical QE convention) rather than using the
+        raw physical moment as `starting_magnetization`.
+    input_data : dict, optional
+        `{NAMELIST_NAME: {key: value, ...}, ...}` -- same shape ASE's own
+        `write_espresso_in` expects. Merged ON TOP of
+        `DEFAULT_QE_NAMELISTS` (see module docstring): unmentioned
+        default keys are kept, mentioned ones are overridden. Do NOT put
+        `starting_magnetization(i)` in here when `magmom` is given --
+        it's derived and written automatically.
+    kpts, kspacing, koffset, crystal_coordinates
+        Passed straight through to `ase.io.write`. `kspacing` (if not
+        None) takes priority over `kpts` -- that's ASE's own precedence,
+        not something this function adds, so you can leave `kpts` at its
+        default (gamma kpts) and just set `kspacing` to switch modes.
+    centralized : bool, default=True
+        Reformat the written file into the right-aligned/"centralized"
+        namelist style afterwards.
+    indent : int, default=3
+        Left margin (spaces) for `centralized` formatting.
+    """
+    prep_st = prepare_structure(
+        structure=structure.copy(),
+        magmom=magmom,
+        half=half
+    )
+
+    atoms = prep_st["atoms"]
+    # out_structure = 
+    # is_magnetic = prep_st["is_magnetic"]
+    namelists = _merge_input_data(input_data)
+ 
+    rename_map: Optional[Dict[str, str]] = None
+    qe_pseudos = dict(pseudopotentials.copy()) if pseudopotentials is not None else {}
+    # qe_pseudos = dict(pseudopotentials) if pseudopotentials else {}
+
+    if prep_st["is_magnetic"]:
+        # Map element-level pseudo to specific magnetic kinds (e.g., 'Fe' -> 'Fe1', 'Fe2')
+        for site, kind in zip(prep_st["structure"], prep_st["kind_names"]):
+            elem = site.specie.symbol
+            if elem in qe_pseudos and kind not in qe_pseudos:
+                qe_pseudos[kind] = qe_pseudos[elem] 
+
+        # Ensure SYSTEM namelist has nspin set unless user explicitly provided one
+        if "SYSTEM" not in namelists:
+            namelists["SYSTEM"] = {}
+        namelists["SYSTEM"].setdefault("nspin", 2)
+
+        rename_map = build_species_rename_map(atoms, prep_st["kind_names"])
+
+    else:
+        # Strip any accidental magnetic parameters from the SYSTEM namelist
         system_namelist = namelists.get("SYSTEM", {})
         system_namelist.pop("nspin", None)
         

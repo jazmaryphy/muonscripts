@@ -36,6 +36,16 @@
                  mixing_beta = 0.3
 /
 
+&IONS
+                ion_dynamics = 'bfgs'
+/
+
+&CELL
+               cell_dynamics = 'bfgs'
+                       press = 0.0
+                 cell_factor = 1.0
+/
+
 ATOMIC_SPECIES
 Co1     58.933194  Co.pbe-spn-kjpaw_psl.1.0.0.UPF
 Co2     58.933194  Co.pbe-spn-kjpaw_psl.1.0.0.UPF

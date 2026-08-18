@@ -12,7 +12,7 @@ Features:
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import re
 from ase import Atoms
