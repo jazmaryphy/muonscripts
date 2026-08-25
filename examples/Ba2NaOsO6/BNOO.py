@@ -22,7 +22,7 @@ from muonscripts.constants import constants
 
 from muonscripts.muesr_tools.local_fields import multisite_pfields
 from muonscripts.muesr_tools.utils import check_site_distances, get_atom_kinds
-from muonscripts.muesr_tools.sample_candidate_sites import sample_anion_muon_sites
+from muonscripts.muesr_tools.sample_muon_sites import anion_sites, target_sites
 
 from muonscripts.muesr_tools.bayesian import BayesianMomentEstimator
 
@@ -30,40 +30,6 @@ from muonscripts.plot_tools.muon import fancy_style_axes
 
 GAMMA_MU = constants.MUON_GYROMAGNETIC_RATIO/constants.TWOPI
 GAMMA_MU *=1e-6 # MHz/T 
-
-# %%
-
-
-# %%
-def calc_freqdistrib(
-    st: Structure,
-    magmoms: np.ndarray,
-    muon_sites: np.ndarray,
-    lorentz_factor: float = 0.0,
-    k: Optional[Sequence[float]] = None,
-    cont_field: float = 0.0,
-    sphere_radius: int = 100
-) -> np.ndarray:
-    """
-    Compute precession frequency per unit moment \nu/\mu (MHz / \mu_B).
-    """
-    result = multisite_pfields(
-        structure=st.copy(),  # Fixed structure argument reference
-        magmoms=magmoms,
-        muon_positions=muon_sites,
-        sphere_r=sphere_radius,
-        k=k,
-        cont_field=cont_field
-    )
-
-    # Total Dipolar + Lorentz field in Tesla per \mu_B
-    B = result.dipolar + result.lorentz * lorentz_factor
-    B_norm = np.linalg.norm(B, axis=1) 
-
-    # Convert Tesla -> MHz i.e (Tesla /mu_B -> MHz /mu_B)
-    nu = B_norm * GAMMA_MU
-
-    return nu
 
 # %%
 
@@ -99,13 +65,12 @@ print(atm_kinds["Os"])
 # This lets us verify the AFM assignment later.
 
 print("\nOs fractional coordinates:")
-
+ 
 for i in atm_kinds["Os"]:
     print(
         f"index = {i:3d}   "
         f"frac = {p_st.frac_coords[i]}"
     )
-
 
 # %%
 # Magnetic moment directions
@@ -193,7 +158,7 @@ seed_no = 42
 n_samples = 20000
 O_distance = (0.9, 1.10)
 
-candidate_sites = sample_anion_muon_sites(
+candidate_sites = anion_sites(
     p_st.copy(),
     n_samples=n_samples,
 
@@ -247,145 +212,6 @@ distances = check_site_distances(
 # distances["O"]
 
 # %%
-# result = multisite_pfields(
-#     structure=p_st.copy(),
-#     magmoms=magmoms_FM111,
-#     muon_positions=candidate_sites,
-#     sphere_r=100,
-# )
-
-# np.linalg.norm(result.lorentz, axis=1) 
-# B = result.dipolar*0 + result.lorentz
-# B, np.linalg.norm(B, axis=1) 
-
-# %% [markdown]
-# check how long to compute freqs
-# 
-# UNCOMMENT LINES
-
-# %%
-# import time
-
-# for n in [10, 50, 100, 200]:
-
-#     sites = candidate_sites[:n]
-
-#     t0 = time.perf_counter()
-
-#     result = multisite_pfields(
-#         structure=p_st.copy(),
-#         magmoms=magmoms_FM111,
-#         muon_positions=sites,
-#         sphere_r=100,
-#     )
-
-#     elapsed = time.perf_counter() - t0
-
-#     print(
-#         f"{n:6d} muons : "
-#         f"{elapsed:8.2f} s  "
-#         f"({elapsed / n:.4f} s/muon)"
-#     )
-
-# result.dipolar_norm
-# result.lorentz_norm * GAMMA_MU
-
-# %% [markdown]
-# UNCOMMENT LINES BELOW:
-# 
-# Calculate nu / mu
-
-# %%
-sphere_radius=80
-lorentz_factor=0
-
-# %%
-# print("\nCalculating FM [111]...")
-
-# nu_per_mu_FM111 = calc_freqdistrib(
-#     st=p_st.copy(),
-#     magmoms=magmoms_FM111,
-#     muon_sites=candidate_sites,
-#     lorentz_factor=lorentz_factor,
-#     sphere_radius=sphere_radius
-# )
-
-# %%
-# print("\nCalculating AFM [111]...")
-
-# nu_per_mu_AFM111 = calc_freqdistrib(
-#     st=p_st.copy(),
-#     magmoms=magmoms_AFM111,
-#     muon_sites=candidate_sites,
-#     lorentz_factor=lorentz_factor,
-#     sphere_radius=sphere_radius
-# )
-
-# %%
-# print("\nCalculating AFM [001]...")
-
-# nu_per_mu_AFM001 = calc_freqdistrib(
-#     st=p_st.copy(),
-#     magmoms=magmoms_AFM001,
-#     muon_sites=candidate_sites,
-#     lorentz_factor=lorentz_factor,
-#     sphere_radius=sphere_radius
-# )
-
-# %%
-# # Frequency-distribution diagnostics
-
-# frequency_distributions = {
-#     "FM111": nu_per_mu_FM111,
-#     "AFM111": nu_per_mu_AFM111,
-#     "AFM001": nu_per_mu_AFM001,
-# }
-
-
-# for label, values in frequency_distributions.items():
-#     print(f"\n{label}")
-#     print(f"  min    = {values.min():.6f}")
-#     print(f"  max    = {values.max():.6f}")
-#     print(f"  mean   = {values.mean():.6f}")
-#     print(f"  median = {np.median(values):.6f}")
-#     print(f"  std    = {values.std():.6f}")
-
-# %% [markdown]
-# saved results:
-
-# %%
-# BNOO_freqs = {
-#     "FM111": nu_per_mu_FM111,
-#     "AFM111": nu_per_mu_AFM111,
-#     "AFM001": nu_per_mu_AFM001,
-
-#     "sample_sites": candidate_sites,
-
-#     "structure_sites": p_stc,
-
-#     # Store parameters so we know exactly how the data were generated.
-#     "parameters": {
-#         "n_samples": n_samples,
-#         "O_distance": O_distance,
-#         "min_cation_distances": min_cation_distances,
-#         "sphere_radius": sphere_radius,
-#         "seed": seed_no,
-#         "lorentz_factor": lorentz_factor,
-#     },
-# }
-
-# filename = "BNOO_freqs.pkl"
-# filename = os.path.join(dpath, filename)
-# with open(filename, "wb") as f:
-#     pickle.dump(BNOO_freqs, f)
-
-# print(
-#     f"\nSaved frequency distributions to "
-#     f"{filename}"
-# )
-
-
-# %%
 
 
 # %% [markdown]
@@ -399,6 +225,57 @@ with open(filename, "rb") as f:
     loaded_BNOO_freqs = pickle.load(f)
 
 loaded_BNOO_freqs.keys()
+
+# %%
+
+
+# %%
+def get_nu_values(data, label, field_type="dipolar"):
+    """
+    Calculates muon precession frequencies (MHz) for a given magnetic field contribution.
+
+    Parameters
+    ----------
+    data : dict
+        Dictionary containing 'fields' and 'parameters'.
+    label : str
+        Magnetic state label (e.g., "FM111", "AFM001").
+    field_type : str, optional
+        Field component to extract: 'dipolar', 'total', 'lorentz', 
+        'dipolar_tot', or 'contact'. Default is 'dipolar'.
+
+    Returns
+    -------
+    nu_values : np.ndarray
+        Magnitudes converted to frequency in MHz.
+    """
+    valid_fields = {"dipolar", "total", "lorentz", "dipolar_tot", "contact"}
+    if field_type not in valid_fields:
+        raise ValueError(
+            f"Invalid field_type '{field_type}'. Expected one of {valid_fields}"
+        )
+
+    result = data["fields"][label]
+    
+    # Dynamically access field array (e.g., result.dipolar or result.total)
+    field = getattr(result, field_type)
+    
+    # Calculate magnitude along spatial axes
+    field_norm = np.linalg.norm(field, axis=1)
+    
+    # Convert Tesla -> MHz
+    nu_values = field_norm * data["parameters"]["gamma_mu"]
+    
+    return nu_values
+
+# Get default dipolar frequencies
+nu_values = get_nu_values(loaded_BNOO_freqs, "FM111")
+
+# Get total field frequencies
+nu_values = get_nu_values(loaded_BNOO_freqs, "FM111", field_type="total")
+
+# Get dipolar + lorentz frequencies
+nu_values = get_nu_values(loaded_BNOO_freqs, "AFM001", field_type="dipolar_tot")
 
 # %%
 
@@ -420,7 +297,14 @@ styles = {
 fontsize=16
 
 # %%
-estimators = {label: BayesianMomentEstimator(loaded_BNOO_freqs[label]) for label in styles}
+field_type='dipolar'
+# field_type='total'
+
+estimators = {
+    label: BayesianMomentEstimator(
+        get_nu_values(loaded_BNOO_freqs, label, field_type=field_type)
+        ) for label in styles
+    }
 
 fig_in, ax_in = plt.subplots(figsize=(6, 4))
 for label, (style, leglabel) in styles.items():
@@ -448,10 +332,13 @@ plt.savefig(fig_name)
 plt.show()
 
 # %%
+field_type='dipolar'
+# field_type='total'
+
 fig, ax = plt.subplots(figsize=(6, 4))
 results = {}
 for label, (style, leglabel) in styles.items():
-    estimator = BayesianMomentEstimator(loaded_BNOO_freqs[label])
+    estimator = BayesianMomentEstimator(get_nu_values(loaded_BNOO_freqs, label, field_type=field_type))
     post = estimator.posterior(expt_freqs, expt_errs, mu_grid)
     map_val = estimator.MAP(mu_grid, post)
     ci = estimator.credible_interval(mu_grid, post)
