@@ -1,16 +1,79 @@
 # %%
+"""Lattice and crystallographic site symmetry utilities."""
+
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple, Sequence, Union
+
 import spglib
 import numpy as np
-import numpy.typing as npt
-from collections import defaultdict
-from typing import Sequence, Optional, Union, Dict, List
-
 from ase import Atoms
+import numpy.typing as npt
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 # %%
-def _label_kinds(kind_symbols: Dict[int, str]) -> Dict[int, str]:
+def get_site_info(
+    atoms: Atoms,
+    position_or_index: Union[npt.ArrayLike, int],
+    coords_are_cartesian: bool = False,
+    atol: float = 1e-3,
+) -> Tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    Optional[int],
+    Optional[str],
+]:
+    """Resolve a target site into Cartesian/fractional coordinates and site metadata.
+
+    Args:
+        atoms: ASE `Atoms` object representing the crystal lattice.
+        position_or_index: Target position given as fractional/Cartesian coordinates,
+            or an integer atom index in `atoms`.
+        coords_are_cartesian: If True, treats coordinate input as Cartesian (Å).
+            If False, treats input as fractional unit-cell coordinates [0, 1).
+        atol: Position tolerance in Ångströms to identify a matching atom index/symbol.
+
+    Returns:
+        Tuple containing:
+            - cart_pos: Cartesian position array in Å, shape `(3,)`.
+            - frac_pos: Fractional position array, shape `(3,)`.
+            - site_index: Matched atom index in structure, or None if off-lattice.
+            - site_symbol: Matched chemical symbol, or None if off-lattice.
+    """
+    site_index: Optional[int] = None
+    site_symbol: Optional[str] = None
+
+    # Option A: Passed an integer atom index directly
+    if isinstance(position_or_index, (int, np.integer)):
+        site_index = int(position_or_index)
+        site_symbol = str(atoms.symbols[site_index])
+        cart_pos = atoms.positions[site_index].copy()
+        frac_pos = atoms.get_scaled_positions()[site_index].copy()
+
+    # Option B: Passed a coordinate vector (fractional or Cartesian)
+    else:
+        pos_arr = np.asarray(position_or_index, dtype=np.float64)
+        if coords_are_cartesian:
+            cart_pos = pos_arr
+            frac_pos = atoms.cell.scaled_positions(cart_pos)
+        else:
+            frac_pos = pos_arr
+            cart_pos = atoms.cell.cartesian_positions(frac_pos)
+
+        # Spatial lookup: check if coordinates match an existing atom site
+        if len(atoms) > 0:
+            distances = np.linalg.norm(atoms.positions - cart_pos, axis=1)
+            min_idx = int(np.argmin(distances))
+            if distances[min_idx] <= atol:
+                site_index = min_idx
+                site_symbol = str(atoms.symbols[min_idx])
+
+    return cart_pos, frac_pos, site_index, site_symbol
+
+# %%
+def _label_kinds(
+    kind_symbols: Dict[int, str]
+) -> Dict[int, str]:
     """
     Helper to generate distinct labels for symmetry kinds.
     
@@ -102,22 +165,18 @@ def get_atom_kinds(
     labels = _label_kinds(kind_symbols)
     return {labels[k]: kind_dict[k] for k in sorted(kind_dict)}
 
-# %%
+
 def get_site_labels(atoms: Atoms) -> List[str]:
-    """Per-atom label distinguishing inequivalent sites of the same element.
+    """Generate per-atom site labels incorporating crystallographic site distinction.
 
-    Uses ASE's `spacegroup_kinds` array (populated automatically when
-    reading a CIF with symmetry via `ase.io.read`) to detect when an
-    element occupies more than one crystallographically distinct site.
+    Uses ASE's `spacegroup_kinds` array if populated (e.g., from CIF import), falling
+    back to plain element symbols if symmetry information is absent.
 
-    - Elements with a single site keep their plain symbol (e.g. 'Ba', 'Y').
-    - Elements with multiple distinct sites get a numbered suffix, in
-      order of first appearance in `atoms` (e.g. 'Cu1', 'Cu2', 'O1', 'O2').
+    Args:
+        atoms: Input ASE `Atoms` object.
 
-    If `atoms` has no `spacegroup_kinds` array (e.g. it wasn't read from a
-    CIF, or symmetry info wasn't kept), every atom just gets its plain
-    element symbol -- i.e. site-level distinction is unavailable and
-    charge lookups fall back to per-element behaviour automatically.
+    Returns:
+        List of per-atom site strings (e.g., `['Cu1', 'Cu2', 'O', 'O']`).
     """
     symbols = np.array(atoms.get_chemical_symbols())
     kinds = atoms.arrays.get("spacegroup_kinds")
@@ -132,7 +191,7 @@ def get_site_labels(atoms: Atoms) -> List[str]:
         elem_kinds = kinds[elem_mask]
 
         # Unique kinds for this element, in order of first appearance
-        seen = []
+        seen: List[int] = []
         for k in elem_kinds:
             if k not in seen:
                 seen.append(k)
@@ -146,32 +205,22 @@ def get_site_labels(atoms: Atoms) -> List[str]:
 
 
 def check_charges_cover_atoms(
-    atoms: Atoms, 
-    charges: Dict, 
-    strict: bool =False
+    atoms: Atoms,
+    charges: Dict[str, float],
+    strict: bool = False,
 ) -> List[str]:
-    """Check that every atom in `atoms` resolves to a charge in `charges`.
+    """Verify that every atom in `atoms` maps to an entry in `charges`.
 
-    Mirrors the same lookup order used by `_replicate_lattice` in
-    point_charge.py (site label first, e.g. 'O2', then plain element
-    symbol, e.g. 'O') and reports any atoms that would silently resolve
-    to `None` (and therefore be DROPPED from the replicated lattice
-    rather than raising an error).
+    Args:
+        atoms: Input ASE `Atoms` structure.
+        charges: Mapping of element symbols or site labels to formal charges.
+        strict: If True, raises ValueError if any unresolved sites are present.
 
-    Parameters
-    ----------
-    strict : bool, default=False
-        If True, raise a ValueError listing the unresolved site labels.
-        If False, just return the list of unresolved labels (empty list
-        means everything is covered) so the caller can decide what to do
-        (e.g. print a warning).
+    Returns:
+        List of missing site/element label strings.
 
-    Returns
-    -------
-    list of str
-        Unique site labels (e.g. ['O2']) present in `atoms` that do NOT
-        resolve to a charge, either directly or via the plain-element
-        fallback.
+    Raises:
+        ValueError: If `strict=True` and unassigned charges exist.
     """
     site_labels = get_site_labels(atoms)
     symbols = atoms.get_chemical_symbols()

@@ -1,48 +1,45 @@
 # %%
+"""Point-charge (PC) lattice summation and Electric Field Gradient (EFG) tensor calculations."""
+
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+import matplotlib.axes
 import numpy as np
-from constants import constants
+from ase import Atoms
+import numpy.typing as npt
+from numpy.typing import NDArray
+
 from efg.utils import get_omegaQ_mu, quadrupole_frequencies
-from efg.lattice_utils import get_site_labels, check_charges_cover_atoms
+from efg.lattice import check_charges_cover_atoms, get_site_labels, get_site_info
+
+from constants.constants import ANGSTROM, ELEMENTARY_CHARGE, EPSILON0, H_PLANCK, MUON_GYROMAGNETIC_RATIO
 
 # %%
 def _replicate_lattice(
-    atoms, 
-    charges, 
-    sphere_radius, 
-    exclude_indices=(), 
-    validate_charges=True
-):
-    """Generate (position[m], charge[e]) for every periodic image of
-    every atom in `atoms` within `sphere_radius` of the origin's unit cell
-    (replicated enough times to cover `sphere_radius` in every direction, from
-    the TRUE cell matrix -- works for any crystal system, not just
-    orthorhombic).
+    atoms: Atoms,
+    charges: dict[str, float],
+    sphere_radius_m: float,
+    exclude_indices: Sequence[int] = (),
+    validate_charges: bool = True,
+) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Generate positions and charges for periodic images within a cutoff sphere.
 
-    `charges` supports two levels of keys, so you don't have to specify a
-    site-resolved charge for every element:
+    Replicates unit cell positions across periodic boundaries to encompass a spherical
+    cutoff region of radius `sphere_radius_m` around the origin.
 
-    - Per-element key, e.g. {'O': -2, 'Ba': 2, 'Y': 3} -- applies to every
-      atom of that element regardless of which crystallographic site it
-      sits on.
-    - Per-site key, e.g. {'Cu1': 1, 'Cu2': 2} -- applies only to atoms on
-      that specific site (as identified by `get_site_labels`), letting you
-      give chemically/crystallographically distinct atoms of the SAME
-      element different charges (e.g. Cu1+ at the 1a site vs a different
-      formal charge at the 2g site in YBa2Cu3O6-type structures).
+    Args:
+        atoms: Crystal structure containing atomic positions and cell parameters.
+        charges: Mapping of element symbols or site labels to formal charges in units of e.
+        sphere_radius_m: Spherical cutoff radius in meters.
+        exclude_indices: 0-based indices of atoms in `atoms` to exclude from sum.
+        validate_charges: If True, raises ValueError if `charges` does not cover all atoms.
 
-    You can mix both in the same dict, e.g. {'Cu1': 1, 'Cu2': 2, 'O': -2,
-    'Ba': 2, 'Y': 3}: per-site keys are checked first, and any element
-    without a per-site key present in `charges` falls back to its plain
-    element-symbol entry.
+    Returns:
+        Tuple containing:
+            - **pts**: Cartesian coordinates of replicated charges in meters, shape `(N, 3)`.
+            - **qs**: Charge values in Coulombs, shape `(N,)`.
 
-    validate_charges : bool, default=True
-        If True (recommended), raise a ValueError up front if `charges`
-        doesn't cover every atom (see `check_charges_cover_atoms`), so a
-        typo'd or incomplete `charges` dict fails loudly instead of
-        silently dropping atoms from the lattice sum. Set to False only
-        if you deliberately want atoms with no matching charge to be
-        excluded from the sum on purpose (e.g. treating a sublattice as
-        formally neutral/absent).
+    Raises:
+        ValueError: If `validate_charges=True` and any atom lacks an assigned charge.
     """
     if validate_charges:
         missing = check_charges_cover_atoms(atoms, charges=charges, strict=False)
@@ -51,543 +48,539 @@ def _replicate_lattice(
                 f"ERROR: <charges={charges}> does not cover whole atoms/structure, "
                 f"charges of: {missing} missing!"
             )
+        # if missing:
+        #     raise ValueError(
+        #         f"Missing charge specification for site(s)/species: {missing}"
+        #     )
 
-    cell = np.array(atoms.get_cell())              # (3,3), Angstrom, ASE convention
-    positions = atoms.get_positions()               # (N,3), Angstrom
-    symbols = np.array(atoms.get_chemical_symbols())
-    site_labels = np.array(get_site_labels(atoms))   # e.g. 'Cu1'/'Cu2' where sites differ
+    cell: npt.NDArray[np.float64] = np.array(atoms.get_cell())
+    positions: npt.NDArray[np.float64] = atoms.get_positions()
+    symbols: npt.NDArray[np.str_] = np.array(atoms.get_chemical_symbols())
+    site_labels: npt.NDArray[np.str_] = np.array(get_site_labels(atoms))
 
     # Resolve each atom's charge ONCE (per-site charge takes priority,
     # falls back to per-element) -- this does NOT depend on which
     # periodic image an atom sits in
-    q_per_atom = [
-        charges.get(label, charges.get(sym)) for label, sym in zip(site_labels, symbols)
+    q_per_atom: list[Optional[float]] = [
+        charges.get(label, charges.get(sym))
+        for label, sym in zip(site_labels, symbols)
     ]
 
     exclude_mask = np.zeros(len(atoms), dtype=bool)
     if exclude_indices:
         exclude_mask[list(exclude_indices)] = True
+
     nonzero_mask = np.array([q is not None and q != 0 for q in q_per_atom])
     keep_atom = nonzero_mask & ~exclude_mask
 
     if not np.any(keep_atom):
-        return np.empty((0, 3)), np.empty((0,))
+        return np.empty((0, 3), dtype=np.float64), np.empty((0,), dtype=np.float64)
 
-    kept_positions = positions[keep_atom]                                        # (n_keep, 3)
+    kept_positions = positions[keep_atom]
     kept_charges = (
         np.array([q_per_atom[i] for i in np.where(keep_atom)[0]], dtype=float)
-        * constants.ELEMENTARY_CHARGE
-    )                                                                              # (n_keep,) Coulomb
+        * ELEMENTARY_CHARGE
+    )
 
     # how many unit cells to replicate in each direction to cover `sphere_radius`
+    sphere_radius_ang = sphere_radius_m / ANGSTROM
     cell_norms = np.linalg.norm(cell, axis=1)
-    n_reps = np.ceil(sphere_radius / constants.ANGSTROM / cell_norms).astype(int) + 1
+    n_reps = np.ceil(sphere_radius_ang / cell_norms).astype(int) + 1
 
     na = np.arange(-n_reps[0], n_reps[0] + 1)
     nb = np.arange(-n_reps[1], n_reps[1] + 1)
     nc = np.arange(-n_reps[2], n_reps[2] + 1)
-    NA, NB, NC = np.meshgrid(na, nb, nc, indexing="ij")
-    n_ints = np.stack([NA.ravel(), NB.ravel(), NC.ravel()], axis=1)  # (n_shifts, 3)
-    shifts = np.dot(n_ints, cell)                                    # (n_shifts, 3), Angstrom
+    nx, ny, nz = np.meshgrid(na, nb, nc, indexing="ij")
 
-    # Broadcast every shift against every kept atom in one shot: (n_shifts, n_keep, 3)
-    pts = (kept_positions[None, :, :] + shifts[:, None, :]).reshape(-1, 3) * constants.ANGSTROM
+    n_ints = np.stack([nx.ravel(), ny.ravel(), nz.ravel()], axis=1)
+    shifts = np.dot(n_ints, cell)
+
+    pts = (kept_positions[None, :, :] + shifts[:, None, :]).reshape(-1, 3) * ANGSTROM
     qs = np.tile(kept_charges, len(shifts))
     return pts, qs
 
 # %%
 def _efg_tensor_from_charges(
-    pts, 
-    qs, 
-    site_position_m, 
-    sphere_radius_m, 
-    gamma_sternheimer=0.0, 
-    verbose=False
-):
-    """Pure point-charge EFG tensor math: given an ALREADY-BUILT set of
-    point charges (`pts` [m], `qs` [C] -- e.g. from `_replicate_lattice`,
-    optionally with extra charges appended) and a probe site, compute the
-    EFG tensor.
+    pts: npt.NDArray[np.float64],
+    qs: npt.NDArray[np.float64],
+    site_position_m: npt.NDArray[np.float64],
+    sphere_radius_m: float,
+    gamma_sternheimer: float = 0.0,
+    verbose: bool = False,
+) -> npt.NDArray[np.float64]:
+    """Compute 3x3 EFG tensor at a target site from predefined point charges.
 
-    This is deliberately separate from `point_charge_EFG` (which also
-    builds the lattice itself). Factoring the tensor math out like this
-    is what lets `build_point_charge_efg_neighbors` and
-    `sphere_radius_convergence` build ONE lattice and reuse it across
-    many probe sites/radii, WITHOUT needing `point_charge_EFG`'s public
-    signature to grow a "skip building the lattice" escape hatch -- they
-    just call this helper directly instead.
+    Args:
+        pts: Point charge Cartesian coordinates in meters, shape `(N, 3)`.
+        qs: Point charges in Coulombs, shape `(N,)`.
+        site_position_m: Evaluation position in meters, shape `(3,)`.
+        sphere_radius_m: Maximum distance cutoff in meters.
+        gamma_sternheimer: Sternheimer antishielding factor.
+        verbose: If True, prints diagnostic summation info.
 
-    Parameters
-    ----------
-    pts : (N, 3) ndarray [m]
-    qs : (N,) ndarray [C]
-    site_position_m : (3,) ndarray [m]
-    sphere_radius_m : float [m]
-        Charges farther than this from `site_position_m` are excluded --
-        matters when `pts`/`qs` were built for a LARGER radius than you
-        want to evaluate at right now (e.g. `sphere_radius_convergence`
-        building once at the max radius, then masking down per trial
-        radius).
-    gamma_sternheimer : float, default=0.0
-    verbose : bool, default=False
-
-    Returns
-    -------
-    (3,3) ndarray, EFG tensor [V/m^2].
+    Returns:
+        Symmetric 3x3 EFG tensor in V/m^2.
     """
     d = pts - site_position_m
     r2 = np.sum(d * d, axis=1)
-    keep = (r2 > 1e-24) & (r2 < sphere_radius_m ** 2)   # drop self-coincident + beyond radius
+    keep = (r2 > 1e-24) & (r2 < sphere_radius_m**2)
+
     d, r2, qs_k = d[keep], r2[keep], qs[keep]
-    r5 = r2 ** 2.5
+    r5 = r2**2.5
 
     if verbose:
         print(
-            f"---- point charge EFG: lattice sum for {len(qs_k)} charges "
-            f"within sphere radius {sphere_radius_m / constants.ANGSTROM:.3f} \u00c5 ----"
+            f"Point-charge EFG: summing {len(qs_k)} charges "
+            f"within radius {sphere_radius_m / ANGSTROM:.3f} Å."
         )
 
-    # Vectorized 3x3 tensor build: equivalent to summing
-    # qs_k*(3*d_a*d_b - r2*delta_ab)/r5 over all charges for each of the 9
-    # tensor components via an explicit double loop, without the Python
-    # loop over (a, b).
     w = qs_k / r5
-    V = 3.0 * np.einsum("i,ia,ib->ab", w, d, d) - np.eye(3) * np.sum(w * r2)
-    V *= 1.0 / (4 * np.pi * constants.EPSILON0)
-    V *= (1 - gamma_sternheimer)   # <-- (1-gamma) convention
-    return V
+    v_tensor = 3.0 * np.einsum("i,ia,ib->ab", w, d, d) - np.eye(3) * np.sum(w * r2)
+    v_tensor *= 1.0 / (4.0 * np.pi * EPSILON0)
+    v_tensor *= 1.0 - gamma_sternheimer
+    return v_tensor
 
-# %%
+
 def point_charge_EFG(
-    atoms,
-    site_position,
-    charges,
-    sphere_radius=50,
-    exclude_indices=(),
-    extra_charges=None,
-    gamma_sternheimer=0.0,
-    verbose=True,
-):
-    """Point-charge EFG tensor [V/m^2] at `site_position`, to any ASE structure 
-    and any sphere_radius.
+    atoms: Atoms,
+    site_position: npt.ArrayLike,
+    charges: dict[str, float],
+    sphere_radius: float = 50.0,
+    exclude_indices: Sequence[int] = (),
+    extra_charges: Optional[Sequence[Tuple[npt.ArrayLike, float]]] = None,
+    coords_are_cartesian: bool = False,
+    gamma_sternheimer: float = 0.0,
+    verbose: bool = True,
+) -> npt.NDArray[np.float64]:
+    """Calculate point-charge EFG tensor [V/m^2] at a specified location.
 
-    Parameters
-    ----------
-    atoms : ase.Atoms
-        The (possibly already muon-relaxed) crystal structure. Should
-        NOT include the muon itself as one of its atoms -- pass that
-        separately via `extra_charges` (or just compute its
-        contribution with muon_point_charge_EFG() below and add the two
-        tensors, which keeps the two physically distinct contributions
-        -- lattice vs. muon -- separately labeled, exactly the
-        convention undi.py expects: 'EFGTensor' for the lattice part,
-        'OmegaQmu' computed independently for the muon part).
-    site_position : (3,) array [Angstrom]
-        Cartesian position of the nucleus to evaluate the EFG at (does
-        NOT need to be one of the atoms in `atoms` -- e.g. a candidate
-        muon site).
-    charges : dict {chemical_symbol: formal_charge_in_units_of_e}
-        e.g. {'Na': +1, 'F': -1} for NaF, {'Ca': +2, 'F': -1} for CaF2.
-        Species not listed are treated as having zero charge (skipped).
-    sphere_radius : float [Angstrom]
-        Real-space sphere_radius radius for the lattice sum. Use check_convergence() 
-        below to verify it's large enough for your structure before trusting 
-        the result. Default 50 Angstrom.
-    exclude_indices : iterable of int
-        Indices (into `atoms`) to exclude from the bulk sum -- e.g. the
-        1-2 ions closest to a candidate muon site if you plan to add
-        their RELAXED positions back in via `extra_charges`.
-    extra_charges : list of (position[Angstrom], charge[e]) or None
-        Any additional point charges not in `atoms` -- e.g. relaxed
-        neighbour positions, or the muon itself if you want it folded
-        into a single combined tensor rather than kept separate.
-    gamma_sternheimer : float, optional
-        Sternheimer antishielding factor, V_total = V_lattice*(1-gamma).
-        Default 0.0 (no antishielding correction, i.e. the bare
-        point-charge lattice sum).
-    verbose : bool
-        Print the number of charges summed over. Default True.
+    Args:
+        atoms: Periodic crystal structure as an ASE `Atoms` instance.
+        site_position: Evaluation coordinate, shape `(3,)`.
+            Interpreted as Cartesian (Å) if `coords_are_cartesian=True`,
+            or fractional unit-cell coordinates if `coords_are_cartesian=False`.
+        charges: Mapping of species or site labels to formal charges in units of e.
+        sphere_radius: Spherical summation cutoff radius in Ångströms.
+        exclude_indices: Indices of structure atoms to omit from summation.
+        extra_charges: Sequence of additional `(position, charge_e)` pairs.
+            Positions respect `coords_are_cartesian`.
+        coords_are_cartesian: If True, inputs are treated as Cartesian (Å).
+            If False (default), inputs are treated as fractional coordinates [0, 1).
+        gamma_sternheimer: Sternheimer antishielding factor.
+        verbose: If True, prints summation info.
 
-    Returns
-    -------
-    (3,3) ndarray, EFG tensor [V/m^2], symmetric and (up to numerical
-    noise) traceless.
-
-    See also
-    --------
-    If you need to evaluate this at MANY probe sites for the SAME
-    `atoms`/`charges`/`sphere_radius`/`exclude_indices` (e.g. one call
-    per nucleus in a cluster), calling this function repeatedly rebuilds
-    the replicated lattice from scratch every time, which is wasted work
-    since the lattice doesn't depend on `site_position` at all. For that
-    case, build it once yourself via `_replicate_lattice` and call
-    `_efg_tensor_from_charges` directly per site instead -- see
-    `build_point_charge_efg_neighbors` for exactly this pattern.
+    Returns:
+        Symmetric traceless 3x3 EFG tensor in V/m^2.
     """
-    sphere_radius_m = sphere_radius * constants.ANGSTROM      # -> metres
-    site = np.asarray(site_position) * constants.ANGSTROM     # -> metres
+    site_pos_arr = np.asarray(site_position, dtype=np.float64)
 
-    pts, qs = _replicate_lattice(atoms, charges, sphere_radius_m, exclude_indices=exclude_indices)
+    # Convert site_position to Cartesian (Å) if fractional
+    if not coords_are_cartesian:
+        cart_site = atoms.cell.cartesian_positions(site_pos_arr)
+    else:
+        cart_site = site_pos_arr
 
+    # Convert Cartesian position to meters
+    site_m = cart_site * ANGSTROM
+    sphere_radius_m = sphere_radius * ANGSTROM
+
+    # Replicate structure point charges
+    pts, qs = _replicate_lattice(
+        atoms, charges, sphere_radius_m, exclude_indices=exclude_indices
+    )
+
+    # Handle extra charges with matching coordinate conversion
     if extra_charges:
-        extra_pts = np.array([p for p, q in extra_charges]) * constants.ANGSTROM
-        extra_qs = np.array([q for p, q in extra_charges]) * constants.ELEMENTARY_CHARGE
+        extra_pts_list = []
+        extra_qs_list = []
+
+        for p, q in extra_charges:
+            p_arr = np.asarray(p, dtype=np.float64)
+            if not coords_are_cartesian:
+                cart_p = atoms.cell.cartesian_positions(p_arr)
+            else:
+                cart_p = p_arr
+
+            extra_pts_list.append(cart_p * ANGSTROM)
+            extra_qs_list.append(q * ELEMENTARY_CHARGE)
+
+        extra_pts = np.array(extra_pts_list, dtype=np.float64)
+        extra_qs = np.array(extra_qs_list, dtype=np.float64)
+
         pts = np.vstack([pts, extra_pts]) if len(pts) else extra_pts
         qs = np.concatenate([qs, extra_qs]) if len(qs) else extra_qs
 
-    return _efg_tensor_from_charges(pts, qs, site, sphere_radius_m, gamma_sternheimer, verbose=verbose)
+    # Compute and return 3x3 tensor
+    return _efg_tensor_from_charges(
+        pts, qs, site_m, sphere_radius_m, gamma_sternheimer, verbose=verbose
+    )
 
 
-def diagonalize_EFG(tensor, quadrupole_moment):
-    """Diagonalize the EFG tensor into its Principal Axis System (PAS).
+def diagonalize_EFG(
+    tensor: npt.NDArray[np.float64],
+    quadrupole_moment: Optional[float] = None,
+) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], Optional[float], float]:
+    """Diagonalize EFG tensor into Principal Axis System (PAS) ordered components.
 
-    Convention (standard NQR/NMR, |Vzz| >= |Vyy| >= |Vxx|, Abragam 1961):
-        eta = |Vxx - Vyy| / |Vzz|          (asymmetry parameter, 0<=eta<=1)
-        chi = |Vzz * e * Q / h|            (quadrupole coupling constant, Hz)
+    Calculates principal values according to |Vzz| >= |Vyy| >= |Vxx|.
 
-    Parameters
-    ----------
-    tensor : (3,3) array [V/m^2]
-    quadrupole_moment : float [m^2]
+    Args:
+        tensor: 3x3 symmetric EFG tensor in V/m^2.
+        quadrupole_moment: Nuclear quadrupole moment Q in m^2 (optional).
 
-    Returns
-    -------
-    V_aa : (3,) ndarray
-        Principal EFG components [V m^-2] ordered as
-            [Vxx, Vyy, Vzz]
-        with
-            |Vzz| >= |Vyy| >= |Vxx|.
-    P : (3, 3) ndarray
-        Matrix whose columns are the normalized principal-axis vectors
-        corresponding to [Vxx, Vyy, Vzz]. The third column therefore
-        gives the principal Vzz axis.
-    chi_q : float
-        Quadrupole coupling constant [MHz].
-    eta : float
-        EFG asymmetry parameter,
-            eta = |Vxx - Vyy| / |Vzz|,
-        satisfying 0 <= eta <= 1 for a properly ordered EFG tensor.
+    Returns:
+        Tuple containing:
+            - **V_aa**: Sorted principal components `[Vxx, Vyy, Vzz]` in V/m^2.
+            - **P**: 3x3 matrix of normalized principal axes eigenvectors.
+            - **chi_q**: Quadrupole coupling constant chi_Q in MHz.
+            - **eta**: Asymmetry parameter eta in [0, 1].
     """
-    evals, evecs = np.linalg.eigh(tensor)                     # eigh: correct for real symmetric
-    order = np.argsort(-np.abs(evals))                        # descending by |value|
-    Vzz, Vyy, Vxx = evals[order]
-    V_aa = np.array([Vxx, Vyy, Vzz])
+    evals, evecs = np.linalg.eigh(tensor)
+    order = np.argsort(-np.abs(evals))
+    v_zz, v_yy, v_xx = evals[order]
+    v_aa = np.array([v_xx, v_yy, v_zz])
 
-    P = evecs[:, order][:, ::-1]                              # Principal axes vector
+    p_matrix = evecs[:, order][:, ::-1]
 
-    scale = np.abs(evals).max()                               # scale parameter to set tolerance
-    eta = float(np.abs(Vxx - Vyy) / np.abs(Vzz)) if abs(Vzz) > 1e-6*scale else 0.0  # Asymmetry parameter of the EFG tensor
+    scale = np.abs(evals).max()
+    eta = float(np.abs(v_xx - v_yy) / np.abs(v_zz)) if abs(v_zz) > 1e-6 * scale else 0.0
 
-    chi_q = float(np.abs(Vzz * constants.ELEMENTARY_CHARGE * quadrupole_moment / constants.PLANCK_H) )   # Quadrupolar constant, in Hz or s^-1
-    chi_q *= 1e-6   # Quadrupolar constant, in MHz
-    return V_aa, P, chi_q, eta
+    chi_q: Optional[float] = None
+    if quadrupole_moment is not None:
+        chi_q = float(np.abs(v_zz * ELEMENTARY_CHARGE * quadrupole_moment / H_PLANCK))
+        chi_q *= 1e-6  # Convert Hz to MHz
+
+    return v_aa, p_matrix, chi_q, eta
 
 # %%
 def compute_efg(
-    atoms, 
-    probe_position, 
-    atomic_charges, 
-    sphere_radius,
-    gamma_sternheimer=0.0, 
-    exclude_indices=(), 
-    extra_charges=None,
-    coords_are_cartesian=True,
-    nuclear_spin=None,
-    quadrupole_moment=None,
-    verbose=True,
-):
-    """
-    coords_are_cartesian : bool
-        Set to True if you are providing coordinates in Cartesian coordinates. 
-        Defaults to True.
-    """
-    # check type of coordinates
-    if not coords_are_cartesian:
-        probe_position = np.dot(probe_position, atoms.get_cell())
-        if extra_charges:
-            extra_charges = [(np.dot(p, atoms.get_cell()).tolist(), q) for p, q in extra_charges]
+    atoms: Atoms,
+    probe_position: npt.ArrayLike,
+    atomic_charges: dict[str, float],
+    sphere_radius: float,
+    gamma_sternheimer: float = 0.0,
+    exclude_indices: Sequence[int] = (),
+    extra_charges: Optional[Sequence[Tuple[npt.ArrayLike, float]]] = None,
+    coords_are_cartesian: bool = True,
+    nuclear_spin: Optional[float] = None,
+    quadrupole_moment: Optional[float] = None,
+    verbose: bool = True,
+) -> dict[str, Any]:
+    """Compute EFG and nuclear quadrupole properties.
 
-    tensor =  point_charge_EFG(
-        atoms,
-        probe_position,
+    Args:
+        atoms: Crystal structure as an ASE `Atoms` instance.
+        probe_position: Target position in Ångströms (if Cartesian) or unit-cell 
+            units (if fractional).
+        atomic_charges: Mapping of elements/species/site labels to formal charges 
+            in units of e.
+        sphere_radius: Summation sphere radius in Ångströms.
+        gamma_sternheimer: Sternheimer antishielding factor.
+        exclude_indices: Indices of atoms in `atoms` to exclude from the lattice sum.
+        extra_charges: Additional explicit point charges as `(pos, charge)` tuples.
+        coords_are_cartesian: If True, treats `probe_position` as Cartesian (Å). 
+            If False, treats `probe_position` as fractional coordinates [0, 1).
+        nuclear_spin: Nuclear spin quantum number I.
+        quadrupole_moment: Spectroscopic electric quadrupole moment Q in m^2.
+        verbose: If True, prints calculation summaries.
+
+    Returns:
+        Dictionary containing the raw 3x3 tensor, principal components (Vxx, Vyy, Vzz), 
+        asymmetry parameter (eta), and quadrupole coupling constant (chi_Q in MHz).
+        and so on...
+    """
+    # Extract probe info
+    cart_pos, frac_pos, probe_index, probe_symbol = get_site_info(
+        atoms=atoms,
+        position_or_index=probe_position,
+        coords_are_cartesian=coords_are_cartesian,
+        atol=1e-3,
+    )
+
+    # compute raw EFG tensor
+    tensor = point_charge_EFG(
+        atoms=atoms,
+        site_position=probe_position,
         charges=atomic_charges,
         sphere_radius=sphere_radius,
         extra_charges=extra_charges,
         exclude_indices=exclude_indices,
+        coords_are_cartesian=coords_are_cartesian,
         gamma_sternheimer=gamma_sternheimer,
         verbose=verbose,
     )
 
-    V_aa = principal_axes = chi = eta = None
-    Vxx = Vyy = Vzz = None
+    # post-processing (Diagonalization, eta, chi's)
+    v_aa, principal_axes, chi, eta = diagonalize_EFG(
+        tensor, quadrupole_moment=quadrupole_moment
+    )
+    v_xx, v_yy, v_zz = v_aa
     nu_z = nu_q = None
 
-    if quadrupole_moment is not None:
-        V_aa, principal_axes, chi, eta = diagonalize_EFG(
-            tensor, quadrupole_moment=quadrupole_moment)
+    if quadrupole_moment is not None and nuclear_spin is not None:
+        props = quadrupole_frequencies(
+            I=nuclear_spin, Q=quadrupole_moment, Vzz=v_zz, eta=eta
+        )
+        nu_z, nu_q = props.get("nu_z_MHz"), props.get("nu_Q_MHz")
 
-        Vxx, Vyy, Vzz = V_aa
-
-        if nuclear_spin is not None:
-            props = quadrupole_frequencies(I=nuclear_spin, Q=quadrupole_moment, Vzz=Vzz, eta=eta)
-            nu_z, nu_q = props.get('nu_z_MHz'), props.get('nu_Q_MHz')
 
     results = {
-        "Vxx": Vxx,
-        "Vyy": Vyy,
-        "Vzz": Vzz,
+        "Vxx": v_xx,
+        "Vyy": v_yy,
+        "Vzz": v_zz,
         "eta": eta,
-        "V_aa": V_aa,
+        "V_aa": v_aa,
         "nu_z_MHz": nu_z,
         "nu_Q_MHz": nu_q,
         "chi_Q_MHz": chi,
         "EFG_tensor": tensor,
         "principal_axes": principal_axes,
-        "probe_index": None,    # TODO later
-        "probe_symbol": None,   # TODO later
-        "probe_position": np.dot(probe_position, np.linalg.inv(atoms.get_cell()))%1.0
+        "probe_index": probe_index,
+        "probe_symbol": probe_symbol,
+        "probe_position": frac_pos,
     }
 
     if verbose:
         _pretty_print_efg(results=results)
     return results
 
-
-def _pretty_print_efg(results):
-    """
-    Pretty-print EFG analysis results.
-
-    Any key with value None is silently skipped.
-    """
+# %%
+def _pretty_print_efg(results: dict[str, Any]) -> None:
+    """Pretty-prints EFG evaluation results table."""
     print("\n" + "=" * 70)
-    #
     probe_pos = results.get("probe_position")
     if probe_pos is not None:
-        label = f"atom {results['probe_index']} ({results['probe_symbol']})" \
-            if results.get("probe_index") is not None and results.get("probe_symbol") is not None \
+        label = (
+            f"atom {results['probe_index']} ({results['probe_symbol']})"
+            if results.get("probe_index") is not None and results.get("probe_symbol") is not None
             else "probe site"
-        print(f"EFG analysis for {label} at frac coord. "
-              f"({probe_pos[0]:.4f}, {probe_pos[1]:.4f}, {probe_pos[2]:.4f})")
-    #
+        )
+        print(
+            f"EFG analysis for {label} at frac coord. "
+            f"({probe_pos[0]:.4f}, {probe_pos[1]:.4f}, {probe_pos[2]:.4f})"
+        )
     print("=" * 70)
-    #
+
     scalar_fields = [
-        ("Vzz",         "V/m^2"),
-        ("Vyy",         "V/m^2"),
-        ("Vxx",         "V/m^2"),
-        ("eta",         "(unitless)"),
-        ("chi_Q_MHz",   "MHz"),
-        ("nu_z_MHz",    "MHz"),
-        ("nu_Q_MHz",    "MHz"),
+        ("Vzz", "V/m^2"),
+        ("Vyy", "V/m^2"),
+        ("Vxx", "V/m^2"),
+        ("eta", "(unitless)"),
+        ("chi_Q_MHz", "MHz"),
+        ("nu_z_MHz", "MHz"),
+        ("nu_Q_MHz", "MHz"),
     ]
 
     for key, unit in scalar_fields:
         val = results.get(key)
         if val is None:
             continue
-
-        if key == "eta":
-            print(f"{key:<12} = {val: .8f} {unit}")
-        elif key in ("chi_Q_MHz", "nu_z_MHz", "nu_Q_MHz"):
+        if key == "eta" or key in ("chi_Q_MHz", "nu_z_MHz", "nu_Q_MHz"):
             print(f"{key:<12} = {val: .8f} {unit}")
         else:
             print(f"{key:<12} = {val: .8e} {unit}")
 
-    V = results.get("EFG_tensor")
-
-    if V is not None:
-        print(f"\nEFG tensor V_ab (V/m^2) =")
+    v_tensor = results.get("EFG_tensor")
+    if v_tensor is not None:
+        print("\nEFG tensor V_ab (V/m^2) =")
         print("-" * 70)
-        for row in V:
+        for row in v_tensor:
             print(" [ " + ", ".join(f"{x: .8e}" for x in row) + " ]")
         print("-" * 70)
+        print(f"Trace(V_ab) = {np.trace(v_tensor): .5e}")
+        print(f"Symmetric   = {np.allclose(v_tensor, v_tensor.T)}")
 
-        print(f"Trace(V_ab) = {np.trace(V): .5e}")
-        print(f"Symmetric   = {np.allclose(V, V.T)}")
-
-    P = results.get("principal_axes")
-
-    if P is not None:
-        print(f"\nprincipal axes (unitless) = ")
+    p_axes = results.get("principal_axes")
+    if p_axes is not None:
+        print("\nprincipal axes (unitless) = ")
         print("-" * 70)
-        for row in P:
+        for row in p_axes:
             print(" [ " + ", ".join(f"{x: .8e}" for x in row) + " ]")
         print("-" * 70)
     print("=" * 70)
 
 # %%
+def sphere_radius_convergence(
+    atoms: Atoms,
+    site_position: npt.ArrayLike,
+    charges: dict[str, float],
+    exclude_indices: Sequence[int] = (),
+    extra_charges: Optional[Sequence[Tuple[npt.ArrayLike, float]]] = None,
+    quadrupole_moment: float = 1.0e-28,
+    sphere_radius_list: Optional[Sequence[float]] = None,
+    gamma_sternheimer: float = 0.0,
+    conv_thr: float = 1e-3,
+    sphere_radius_step: float = 10.0,
+    sphere_radius_max: float = 100.0,
+    num_conv_streak: int = 3,
+    ax: Optional[matplotlib.axes.Axes] = None,
+) -> Tuple[list[float], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Evaluate convergence of real-space EFG summation over varying radii.
+
+    Args:
+        atoms: Crystal structure as ASE `Atoms`.
+        site_position: Target Cartesian evaluation position in Ångströms.
+        charges: Atomic/site formal charge mapping in units of e.
+        exclude_indices: Indices of atoms excluded from summation.
+        extra_charges: Additional point charge tuples `(position, charge)`.
+        quadrupole_moment: Quadrupole moment Q in m^2.
+        sphere_radius_list: Initial list of radii to evaluate in Ångströms.
+        gamma_sternheimer: Antishielding factor.
+        conv_thr: Relative difference convergence threshold.
+        sphere_radius_step: Increment step in Ångströms when extending radii.
+        sphere_radius_max: Maximum search cutoff radius in Ångströms.
+        num_conv_streak: Number of consecutive evaluations required to declare convergence.
+        ax: Optional Matplotlib Axes to plot log relative error vs radius.
+
+    Returns:
+        Tuple containing:
+            - **radii**: List of evaluated radii in Ångströms.
+            - **vzz_values**: Array of Vzz values corresponding to radii.
+            - **rel_errors**: Relative errors normalized against final estimate.
+    """
+    radii = list(sphere_radius_list) if sphere_radius_list is not None else [10.0, 15.0, 20.0, 25.0, 30.0, 40.0]
+
+    build_radius = max(sphere_radius_max + sphere_radius_step, max(radii))
+    build_radius_m = build_radius * ANGSTROM
+    pts_full, qs_full = _replicate_lattice(
+        atoms, charges, build_radius_m, exclude_indices=exclude_indices
+    )
+
+    site_m = np.asarray(site_position, dtype=np.float64) * ANGSTROM
+
+    if extra_charges:
+        extra_pts = np.array([p for p, _ in extra_charges], dtype=np.float64) * ANGSTROM
+        extra_qs = np.array([q for _, q in extra_charges], dtype=np.float64) * ELEMENTARY_CHARGE
+        pts_full = np.vstack([pts_full, extra_pts]) if len(pts_full) else extra_pts
+        qs_full = np.concatenate([qs_full, extra_qs]) if len(qs_full) else extra_qs
+
+    def _vzz(r: float) -> float:
+        r_m = r * ANGSTROM
+        v_tensor = _efg_tensor_from_charges(
+            pts_full, qs_full, site_m, r_m, gamma_sternheimer, verbose=False
+        )
+        v_aa, _, _, _ = diagonalize_EFG(v_tensor, quadrupole_moment=quadrupole_moment)
+        return float(v_aa[2])
+
+    vzz_values = [_vzz(r) for r in radii]
+
+    def _is_converged() -> bool:
+        if len(vzz_values) < num_conv_streak + 1:
+            return False
+        recent = vzz_values[-(num_conv_streak + 1):]
+        diffs = [
+            abs(recent[i + 1] - recent[i]) / max(abs(recent[i + 1]), 1e-300)
+            for i in range(num_conv_streak)
+        ]
+        return all(d < conv_thr for d in diffs)
+
+    while radii[-1] < sphere_radius_max and not _is_converged():
+        next_r = radii[-1] + sphere_radius_step
+        radii.append(next_r)
+        vzz_values.append(_vzz(next_r))
+
+    vzz_arr = np.array(vzz_values)
+    best = vzz_arr[-1]
+    rel_error = np.abs(vzz_arr - best) / max(abs(best), 1e-300)
+
+    print(f"{'radius (Å)':>12} {'Vzz (V/m^2)':>16} {'rel. error vs best':>18}")
+    for r, v, e in zip(radii, vzz_arr, rel_error):
+        print(f"{r:>12.1f} {v:>16.4e} {e:>18.2e}")
+
+    if not _is_converged() and radii[-1] >= sphere_radius_max:
+        print(
+            f"WARNING: reached sphere_radius_max={sphere_radius_max} without "
+            f"{num_conv_streak} consecutive sustained-converged points."
+        )
+
+    if ax is not None:
+        mask = rel_error > 0
+        ax.semilogy(np.array(radii)[mask], rel_error[mask], "o-")
+        ax.set_xlabel("sphere radius (Å)")
+        ax.set_ylabel("relative error vs. largest-radius estimate")
+        ax.set_title("EFG (Vzz): real-space sum convergence")
+        ax.grid(True, which="both", alpha=0.3)
+
+    return radii, vzz_arr, rel_error
+
+# %%
 def build_point_charge_efg_neighbors(
-    atoms,
-    neighbors,
-    muon_position,
-    atomic_charges,
-    include_nuclear_efg=True,
-    include_muon_induced_efg=False,
-    remove_efg_noise=False,
-    efg_noise_threshold=1e-8,
-    efg_factor=1.0,
-    sphere_radius=50.0,
-    gamma_sternheimer=0.0,
-    exclude_indices=(),
-    extra_charges=None,
-    efg_verbose=False,
-    include_muon=True,
-):
+    atoms: Atoms,
+    neighbors: Iterable[Dict[str, Any]],
+    muon_position: Sequence[float] | NDArray[np.float64],
+    atomic_charges: Mapping[str, float],
+    include_nuclear_efg: bool = True,
+    include_muon_induced_efg: bool = False,
+    remove_efg_noise: bool = True,
+    efg_noise_threshold: float = 1e-8,
+    efg_factor: float = 1.0,
+    sphere_radius: float = 50.0,
+    gamma_sternheimer: float = 0.0,
+    exclude_indices: Iterable[int] = (),
+    extra_charges: Optional[Sequence[Tuple[Sequence[float] | NDArray[np.float64], float]]] = None,
+    efg_verbose: bool = False,
+    include_muon: bool = True,
+) -> List[Dict[str, Any]]:
     """
-    Build a quadrupolar neighbours with point-charge EFG tensors.
-
-    Selects nuclei with non-zero quadrupolar interaction from an UNDI
-    cluster and optionally computes their electric field gradient (EFG)
-    tensors using a point-charge lattice model. The resulting list is
-    compatible with UNDI input format.
-
-    Parameters
-    ----------
-    atoms : ase.Atoms
-        Crystal structure used for the point-charge EFG calculation.
-    neighbors : iterable of dict
-        UNDI atom dictionaries containing nuclear information.
-        Each atom dictionary must contain at least:
-        ``Position``, ``Label``, ``Spin`` and
-        ``ElectricQuadrupoleMoment``.
-    muon_position : array-like, shape (3,)
-        Fractional coordinates of the muon in the unit cell.
-    atomic_charges : dict
-        Mapping between atomic species and effective charges used in
-        the point-charge EFG calculation.
-        Example: ``{"V": +5, "O": -2}``
-    include_nuclear_efg : bool, default=True
-        If True, compute the EFG tensor generated by the surrounding
-        nuclear charge distribution. If False, no EFG tensor is added
-        to the atom dictionaries.
-    include_muon_induced_efg : bool, default=False
-        If True, compute the muon-induced quadrupolar interaction
-        contribution and store it as ``OmegaQmu``.
-    remove_efg_noise : bool, default=True
-        If True, remove numerical noise from the computed EFG tensor by
-        setting very small components relative to the largest tensor
-        element to zero.
-    efg_noise_threshold : float, default=1e-8
-        Relative threshold used for EFG noise removal. Components
-        satisfying
-            abs(EFG_ij) < efg_noise_threshold * max(abs(EFG))
-        are set to zero.
-    efg_factor : float, optional
-        Scale factor applied to every supplied EFG tensor.
-    sphere_radius : float, default=50.0
-        Radius of the spherical region (in Angstrom) used for the
-        point-charge lattice summation.
-    gamma_sternheimer : float, default=0.0
-        Sternheimer antishielding factor applied to the lattice EFG tensor.
-    exclude_indices : iterable of int, default=()
-        Indices of atoms in ``atoms`` to exclude from the point-charge
-        lattice summation. 
-    extra_charges : sequence, optional
-        Additional point charges to include in the EFG calculation. The
-        format is the same as accepted by ``compute_efg()`` or ``point_charge_EFG()``.
-        By default, no extra point charges are included.
-    efg_verbose : bool, default=False
-        Print additional information during EFG calculations.
-    include_muon : bool, default=True
-        If True, ensure a muon entry is present in the output.
-        If False, remove any muon entry from the output.
-
-    Returns
-    -------
-    list of dict
-        UNDI-compatible quadrupolar neighbours. The muon is
-        inserted as the first entry.
-
-        Each nuclear entry contains:
-        ``Position``
-            Position relative to the muon (meters).
-        ``Label``
-            Nuclear isotope label.
-        ``Spin``
-            Nuclear spin.
-        ``ElectricQuadrupoleMoment``
-            Nuclear quadrupole moment (m^2).
-        ``EFGTensor``
-            Electric field gradient tensor (V/m^2), only present when
-            ``include_nuclear_efg=True``.
-        ``OmegaQmu``
-            Muon-induced quadrupolar coupling, only present when
-            ``include_muon_induced_efg=True``.
-
-    Notes
-    -----
-    The input ``neighbors`` is not modified. A copy of each atom dictionary
-    is created before adding computed quantities.
-
-    Only nuclei with spin I > 1/2 contribute to the quadrupolar neighbors.
+    Build quadrupolar neighbours with point-charge EFG tensors compatible with UNDI.
     """
-    quadrupolar_neighbors = []
-    muon = None
+    quadrupolar_neighbors: List[Dict[str, Any]] = []
+    muon: Optional[Dict[str, Any]] = None
 
     cell = atoms.get_cell()
-    inverse_cell = np.linalg.inv(cell)
 
-    # Build the replicated lattice ONCE -- see PERFORMANCE NOTE above. It's
-    # independent of which nucleus we're evaluating, so there's no reason
-    # to let point_charge_EFG rebuild it fresh inside the loop below. Fold
-    # in extra_charges once here too, rather than per nucleus.
+    pts: Optional[NDArray[np.float64]] = None
+    qs: Optional[NDArray[np.float64]] = None
+    sphere_radius_m = sphere_radius * ANGSTROM
+
     pts = qs = None
-    sphere_radius_m = sphere_radius * constants.ANGSTROM
     if include_nuclear_efg:
         pts, qs = _replicate_lattice(
             atoms, atomic_charges, sphere_radius_m, exclude_indices=exclude_indices
         )
         if extra_charges:
-            extra_pts = np.array([p for p, q in extra_charges]) * constants.ANGSTROM
-            extra_qs = np.array([q for p, q in extra_charges]) * constants.ELEMENTARY_CHARGE
-            pts = np.vstack([pts, extra_pts]) if len(pts) else extra_pts
-            qs = np.concatenate([qs, extra_qs]) if len(qs) else extra_qs
+            extra_pts = np.array([p for p, q in extra_charges]) * ANGSTROM
+            extra_qs = np.array([q for p, q in extra_charges]) * ELEMENTARY_CHARGE
+            pts = np.vstack([pts, extra_pts]) if pts is not None and len(pts) else extra_pts
+            qs = np.concatenate([qs, extra_qs]) if qs is not None and len(qs) else extra_qs
 
-    for atom in neighbors:
+    for atom_dict in neighbors:
+        atom = atom_dict.copy()
 
-        # Avoid modifying input dictionaries
-        atom = atom.copy()
-
-        # Skip muon here and handle later
+        # Extract or skip muon
         if atom.get("Label") == "mu":
             muon = atom
             continue
 
-        spin = atom.get("Spin", 0.0)
+        spin = float(atom.get("Spin", 0.0))
         is_quadrupolar = spin > 0.5001
 
-        position = atom["Position"]
+        position = np.asarray(atom["Position"])
 
-        # Nuclear EFG from point-charge lattice, AND,
-        # ONLY quadrupolar nuclei: I > 1/2
         if include_nuclear_efg and is_quadrupolar:
+            quadrupole_moment = float(atom["ElectricQuadrupoleMoment"])
 
-            quadrupole_moment = atom["ElectricQuadrupoleMoment"]
-
-            # Position of nucleus in fractional coordinates
-            # relative to the original unit cell
+            # Position of nucleus relative to original unit cell
             nuclear_cartesian = (
-                np.dot(muon_position, cell) + position / constants.ANGSTROM
+                np.dot(muon_position, cell) + position / ANGSTROM
             )
-            site_m = nuclear_cartesian * constants.ANGSTROM
+            site_m = nuclear_cartesian * ANGSTROM
 
             tensor = _efg_tensor_from_charges(
                 pts, qs, site_m, sphere_radius_m, gamma_sternheimer, verbose=efg_verbose
             )
 
-            # Remove numerical noise
             if remove_efg_noise:
-                max_element = np.max(np.abs(tensor))
+                max_element = float(np.max(np.abs(tensor)))
                 if max_element > 0:
                     tensor[np.abs(tensor) < efg_noise_threshold * max_element] = 0.0
 
-            tensor *= efg_factor 
+            tensor *= efg_factor
             atom["EFGTensor"] = tensor
 
-        # Muon induced quadrupolar interaction
-        # Not sure about its accuracy
         if include_muon_induced_efg and is_quadrupolar:
-            distance = np.linalg.norm(position)
+            quadrupole_moment = float(atom["ElectricQuadrupoleMoment"])
+            distance = float(np.linalg.norm(position))
             atom["OmegaQmu"] = get_omegaQ_mu(I=spin, Q=quadrupole_moment, r=distance)
 
         quadrupolar_neighbors.append(atom)
@@ -598,7 +591,7 @@ def build_point_charge_efg_neighbors(
                 "Position": np.zeros(3),
                 "Label": "mu",
                 "Spin": 0.5,
-                "Gamma": constants.MUON_GYROMAGNETIC_RATIO,
+                "Gamma": MUON_GYROMAGNETIC_RATIO,
             }
         else:
             muon = muon.copy()
@@ -609,265 +602,316 @@ def build_point_charge_efg_neighbors(
     return quadrupolar_neighbors
 
 # %%
-def sphere_radius_convergence(
-    atoms, 
-    site_position, 
-    charges, 
-    exclude_indices=(), 
-    extra_charges=None, 
-    quadrupole_moment=1.0e-28,
-    sphere_radius_list=None, 
-    gamma_sternheimer=0.0,
-    conv_thr=1e-3, 
-    sphere_radius_step=10.0, 
-    sphere_radius_max=100.0,
-    num_conv_streak=3, 
-    ax=None
-):
-    """Check (and optionally plot) convergence of the point-charge EFG
-    real-space sum with sphere_radius.
+class PointChargeEFG:
+    """Calculator interface for evaluating Electric Field Gradients using point charges.
 
-    IMPORTANT (learned from a real, non-monotonic convergence curve):
-    this sum can oscillate shell-to-shell rather than decrease smoothly
-    -- a single low-error point does NOT mean you've converged; the
-    curve can (and does, in practice) rise again at the next radius.
-    So the stopping rule requires `num_conv_streak` CONSECUTIVE pairwise
-    comparisons to all be below `conv_thr`, not just the most recent
-    one -- a single lucky dip won't trigger early stopping anymore.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes or None
-        If given, plot log10(relative error) vs sphere_radius onto this
-        Axes. None (default): no plot, just the printed table + arrays.
-    num_conv_streak : int
-        Number of consecutive pairwise comparisons that must all satisfy
-        conv_thr before stopping the auto-extension. Default 3.
+    Attributes:
+        atoms (Atoms): The periodic crystal structure.
+        charges (dict[str, float]): Formal atomic or site charges in units of e.
+        sphere_radius (float): Default summation cutoff sphere radius in Ångströms.
+        gamma_sternheimer (float): Sternheimer antishielding factor.
+        exclude_indices (Tuple[int, ...]): Atomic indices excluded from lattice summations.
+        properties (dict[str, Any]): Calculator inputs and target site metadata.
     """
-    if sphere_radius_list is None:
-        sphere_radius_list = [10, 15, 20, 25, 30, 40]
-    sphere_radius_list = list(sphere_radius_list)
 
-    # Build the lattice once, big enough for anything this function might
-    # ask for: sphere_radius_max, PLUS one extra step beyond it, since the
-    # auto-extension loop below can overshoot sphere_radius_max by up to
-    # one sphere_radius_step before its stopping condition re-checks.
-    build_radius = max(sphere_radius_max + sphere_radius_step, max(sphere_radius_list))
-    build_radius_m = build_radius * constants.ANGSTROM
-    pts_full, qs_full = _replicate_lattice(
-        atoms, charges, build_radius_m, exclude_indices=exclude_indices
-    )
+    def __init__(
+        self,
+        atoms: Atoms,
+        charges: dict[str, float],
+        sphere_radius: float = 50.0,
+        gamma_sternheimer: float = 0.0,
+        exclude_indices: Sequence[int] = (),
+    ) -> None:
+        """Initialize the PointChargeEFG calculator."""
+        self.atoms = atoms
+        self.charges = charges
+        self.sphere_radius = sphere_radius
+        self.gamma_sternheimer = gamma_sternheimer
+        self.exclude_indices = tuple(exclude_indices)
 
-    site_m = np.asarray(site_position) * constants.ANGSTROM
+        # Storage for calculation outputs and metadata
+        self.results: dict[str, Any] = {}
+        self.properties: dict[str, Any] = {
+            "charges": self.charges,
+            "sphere_radius": self.sphere_radius,
+            "gamma_sternheimer": self.gamma_sternheimer,
+            "exclude_indices": self.exclude_indices,
+        }
 
-    if extra_charges:
-        extra_pts = np.array([p for p, q in extra_charges]) * constants.ANGSTROM
-        extra_qs = np.array([q for p, q in extra_charges]) * constants.ELEMENTARY_CHARGE
-        pts_full = np.vstack([pts_full, extra_pts]) if len(pts_full) else extra_pts
-        qs_full = np.concatenate([qs_full, extra_qs]) if len(qs_full) else extra_qs
 
-    def _vzz(r):
-        sphere_radius_m = r * constants.ANGSTROM
-        V = _efg_tensor_from_charges(
-            pts_full, qs_full, site_m, sphere_radius_m, gamma_sternheimer, verbose=False
+    @property
+    def efg_tensor(self) -> Optional[npt.NDArray[np.float64]]:
+        """Return the 3x3 EFG tensor [V/m^2]."""
+        return self.results.get("EFG_tensor")
+
+    @property
+    def principal_axes(self) -> Optional[npt.NDArray[np.float64]]:
+        """Return the principal axis eigenvectors."""
+        return self.results.get("principal_axes")
+
+    @property
+    def v_xx(self) -> Optional[float]:
+        """Return the principal Vxx component."""
+        return self.results.get("Vxx")
+
+    @property
+    def v_yy(self) -> Optional[float]:
+        """Return the principal Vyy component."""
+        return self.results.get("Vyy")
+
+    @property
+    def v_zz(self) -> Optional[float]:
+        """Return the principal Vzz component."""
+        return self.results.get("Vzz")
+
+    @property
+    def eta(self) -> Optional[float]:
+        """Return the asymmetry parameter eta."""
+        return self.results.get("eta")
+
+    @property
+    def nu_z_mhz(self) -> Optional[float]:
+        """Return nu_z in MHz."""
+        return self.results.get("nu_z_MHz")
+
+    @property
+    def nu_q_mhz(self) -> Optional[float]:
+        """Return nu_Q in MHz."""
+        return self.results.get("nu_Q_MHz")
+
+    @property
+    def chi_q_mhz(self) -> Optional[float]:
+        """Return quadrupolar coupling constant chi_Q in MHz."""
+        return self.results.get("chi_Q_MHz")
+
+
+    def compute_at(
+        self,
+        position: Union[npt.ArrayLike, int],
+        coords_are_cartesian: bool = False,
+        nuclear_spin: Optional[float] = None,
+        quadrupole_moment: Optional[float] = None,
+        gamma_sternheimer: Optional[float] = None,
+        extra_charges: Optional[Sequence[Tuple[npt.ArrayLike, float]]] = None,
+        verbose: bool = False,
+        atol: float = 1e-3,
+    ) -> dict[str, Any]:
+        """Compute the EFG tensor and quadrupolar properties at a specific position."""
+        # Resolve gamma: use override if provided, else fall back to instance default
+        gamma = self.gamma_sternheimer if gamma_sternheimer is None else gamma_sternheimer
+        # Resolve target site coordinates and metadata
+        cart_pos, frac_pos, probe_idx, probe_sym = get_site_info(
+            atoms=self.atoms,
+            position_or_index=position,
+            coords_are_cartesian=coords_are_cartesian,
+            atol=atol,
         )
-        V_aa, _, _, _ = diagonalize_EFG(V, quadrupole_moment=quadrupole_moment)
-        _, _, Vzz = V_aa
-        return Vzz
 
-    Vzz_values = [_vzz(r) for r in sphere_radius_list]
+        # Update input & site metadata
+        self.properties.update(
+            {
+                "probe_position": position,
+                "cartesian_position": cart_pos,
+                "fractional_position": frac_pos,
+                "probe_index": probe_idx,
+                "probe_symbol": probe_sym,
+                "coords_are_cartesian": coords_are_cartesian,
+                "gamma_sternheimer": gamma,
+                "nuclear_spin": nuclear_spin,
+                "quadrupole_moment": quadrupole_moment,
+            }
+        )
 
-    def _is_converged():
-        if len(Vzz_values) < num_conv_streak + 1:
-            return False
-        recent = Vzz_values[-(num_conv_streak+1):]
-        diffs = [abs(recent[i+1]-recent[i])/max(abs(recent[i+1]), 1e-300) for i in range(num_conv_streak)]
-        return all(d < conv_thr for d in diffs)
+        # Compute properties using Cartesian coordinates
+        res = compute_efg(
+            atoms=self.atoms,
+            probe_position=cart_pos,
+            atomic_charges=self.charges,
+            sphere_radius=self.sphere_radius,
+            gamma_sternheimer=gamma,
+            exclude_indices=self.exclude_indices,
+            extra_charges=extra_charges,
+            coords_are_cartesian=True,  # Standardized to Cartesian, since "cart_pos" used
+            nuclear_spin=nuclear_spin,
+            quadrupole_moment=quadrupole_moment,
+            verbose=verbose,
+        )
 
-    while sphere_radius_list[-1] < sphere_radius_max and not _is_converged():
-        next_r = sphere_radius_list[-1] + sphere_radius_step
-        if next_r > build_radius:
-            # Safety net: shouldn't happen given build_radius's margin
-            # above, but if it ever does, extend the lattice rather than
-            # silently evaluating with an under-sized point set.
-            build_radius = next_r
-            build_radius_m = build_radius * constants.ANGSTROM
-            pts_full, qs_full = _replicate_lattice(
-                atoms, charges, build_radius_m, exclude_indices=exclude_indices
+        self.results = res
+        return self.results
+
+    def get_raw_tensor(
+        self,
+        position: Union[npt.ArrayLike, int],
+        coords_are_cartesian: bool = False,
+        gamma_sternheimer: Optional[float] = None,
+        extra_charges: Optional[Sequence[Tuple[npt.ArrayLike, float]]] = None,
+        atol: float = 1e-3,
+    ) -> npt.NDArray[np.float64]:
+        """Compute raw 3x3 EFG matrix [V/m^2] without full property extraction."""
+        # Resolve gamma: use override if provided, else fall back to instance default
+        gamma = self.gamma_sternheimer if gamma_sternheimer is None else gamma_sternheimer
+
+        # Standardize position input via lattice helper
+        cart_pos, frac_pos, probe_idx, probe_sym = get_site_info(
+            atoms=self.atoms,
+            position_or_index=position,
+            coords_are_cartesian=coords_are_cartesian,
+            atol=atol,
+        )
+
+        # Update site metadata
+        self.properties.update(
+            {
+                "probe_position": position,
+                "cartesian_position": cart_pos,
+                "fractional_position": frac_pos,
+                "probe_index": probe_idx,
+                "probe_symbol": probe_sym,
+                "coords_are_cartesian": coords_are_cartesian,
+                "gamma_sternheimer": gamma,
+            }
+        )
+
+        tensor = point_charge_EFG(
+            atoms=self.atoms,
+            site_position=cart_pos,
+            charges=self.charges,
+            sphere_radius=self.sphere_radius,
+            exclude_indices=self.exclude_indices,
+            extra_charges=extra_charges,
+            coords_are_cartesian=True,  # Standardized to Cartesian, since "cart_pos" used
+            gamma_sternheimer=gamma,
+            verbose=False,
+        )
+
+        # Update results dict
+        self.results.update(
+            {
+                "EFG_tensor": tensor,
+            }
+        )
+        # self.results = {"EFG_tensor": tensor}
+
+        return tensor
+
+
+    def print_summary(self) -> None:
+        """Print a structured summary of calculation results and site metadata."""
+        if not self.results:
+            print("PointChargeEFG: No calculation results available.")
+            return
+
+        props = self.properties
+        symbol = props.get("probe_symbol", "N/A")
+        idx = props.get("probe_index", "N/A")
+        frac_pos = props.get("fractional_position")
+        cart_pos = props.get("cartesian_position")
+
+        # Format positions cleanly
+        frac_str = (
+            f"({frac_pos[0]: 8.5f}, {frac_pos[1]: 8.5f}, {frac_pos[2]: 8.5f})"
+            if frac_pos is not None
+            else "N/A"
+        )
+        cart_str = (
+            f"({cart_pos[0]: 8.5f}, {cart_pos[1]: 8.5f}, {cart_pos[2]: 8.5f})"
+            if cart_pos is not None
+            else "N/A"
+        )
+
+        print("=" * 65)
+        print(f"  EFG CALCULATION SUMMARY: Site {symbol} (Index {idx})")
+        print("=" * 65)
+
+        print("\n-- Site Metadata & Inputs --")
+        print(f"  Fractional Pos : {frac_str}")
+        print(f"  Cartesian Pos  : {cart_str}")
+        print(f"  Sum Radius     : {props.get('sphere_radius', 'N/A')} Å")
+        print(f"  Sternheimer G  : {props.get('gamma_sternheimer', 0.0): .4f}")
+        if props.get("nuclear_spin") is not None:
+            print(f"  Nuclear Spin I : {props.get('nuclear_spin')}")
+        if props.get("quadrupole_moment") is not None:
+            print(f"  Quadrupole Q   : {props.get('quadrupole_moment'): .4e} m^2")
+
+        # EFG Matrix Output
+        if self.efg_tensor is not None:
+            print("\n-- Raw EFG Tensor V_ij (V/m^2) --")
+            for row in self.efg_tensor:
+                print(
+                    f"  ( {row[0]: 14.6e}  {row[1]: 14.6e}  {row[2]: 14.6e} )"
+                )
+
+        # Principal Diagonal & Asymmetry (Safely handle None if get_raw_tensor was used)
+        if self.v_zz is not None and self.v_xx is not None and self.v_yy is not None:
+            print("\n-- Principal Diagonal & Asymmetry --")
+            print(
+                f"  Vxx = {self.v_xx: 13.6e} V/m^2 | Vyy = {self.v_yy: 13.6e} V/m^2 | Vzz = {self.v_zz: 13.6e} V/m^2"
             )
-            if extra_charges:
-                pts_full = np.vstack([pts_full, extra_pts])
-                qs_full = np.concatenate([qs_full, extra_qs])
-        sphere_radius_list.append(next_r)
-        Vzz_values.append(_vzz(next_r))
+            if self.eta is not None:
+                print(f"  Asymmetry Parameter (eta) : {self.eta: .5f}")
 
-    Vzz_values = np.array(Vzz_values)
-    best = Vzz_values[-1]
-    rel_error = np.abs(Vzz_values - best) / max(abs(best), 1e-300)
+        # Quadrupolar Frequencies (Only prints if quadrupole_moment was provided)
+        if self.chi_q_mhz is not None:
+            print("\n-- Quadrupolar Frequencies --")
+            print(
+                f"  Cq  (Quadrupolar Coupling)       : {self.chi_q_mhz: .6f} MHz"
+            )
+            if self.nu_q_mhz is not None:
+                print(
+                    f"  nu_Q                             : {self.nu_q_mhz: .6f} MHz"
+                )
+            if self.nu_z_mhz is not None:
+                print(
+                    f"  nu_z                             : {self.nu_z_mhz: .6f} MHz"
+                )
 
-    print(f"{'radius (Å)':>12} {'Vzz (V/m^2)':>16} {'rel. error vs best':>18}")
-    for r, v, e in zip(sphere_radius_list, Vzz_values, rel_error):
-        print(f"{r:>12.1f} {v:>16.4e} {e:>18.2e}")
-    if not _is_converged() and sphere_radius_list[-1] >= sphere_radius_max:
-        print(f"  WARNING: reached sphere_radius_max={sphere_radius_max} without "
-              f"{num_conv_streak} consecutive sustained-converged points --.")
-        print(f"  The sum may not actually be converged. Consider raising "
-              f"sphere_radius_max or plotting to inspect visually.")
-
-    if ax is not None:
-        mask = rel_error > 0
-        ax.semilogy(np.array(sphere_radius_list)[mask], rel_error[mask], 'o-')
-        ax.set_xlabel('sphere radius (Angstrom)')
-        ax.set_ylabel('relative error vs. largest-radius estimate')
-        ax.set_title('EFG (Vzz): real-space sum convergence')
-        ax.grid(True, which='both', alpha=0.3)
-
-    return sphere_radius_list, Vzz_values, rel_error
-
-# %%
-def atom_dict_EFG(
-    atoms, 
-    site_position, 
-    label, 
-    spin, 
-    gamma, 
-    quadrupole_moment,
-    charges, 
-    sphere_radius=30, 
-    muon_position=None, 
-    exclude_indices=(), 
-    extra_charges=None, 
-    gamma_sternheimer=0.0, 
-    verbose=False
-):
-    """One-call convenience: compute the lattice EFG (and, if
-    mu_position is given, the muon-induced contribution too, kept in
-    the SEPARATE 'OmegaQmu' key -- never merged into 'EFGTensor', to
-    avoid double-counting) and package everything as an undi.py atom
-    dict, ready to drop into a shell list for MuonNuclearInteraction.
-
-    atoms : ase.Atoms
-        The (possibly already muon-relaxed) crystal structure. Should
-        NOT include the muon itself as one of its atoms -- pass that
-        separately via `extra_charges` (or just compute its
-        contribution with muon_point_charge_EFG() below and add the two
-        tensors, which keeps the two physically distinct contributions
-        -- lattice vs. muon -- separately labeled, exactly the
-        convention undi.py expects: 'EFGTensor' for the lattice part,
-        'OmegaQmu' computed independently for the muon part).
-    site_position : (3,) array [Angstrom]
-        Cartesian position of the nucleus to evaluate the EFG at (does
-        NOT need to be one of the atoms in `atoms` -- e.g. a candidate
-        muon site).
-    label : str
-        Label for the atom/site, e.g. 'F1' or 'Na2'.
-    spin : float
-        Nuclear spin quantum number I of the nucleus at `site_position`.
-    gamma : float [rad/s/T]
-        Gyromagnetic ratio of the nucleus at `site_position`.
-    quadrupole_moment : float [m^2]
-        Nuclear electric quadrupole moment Q of the nucleus at `site_position`.
-    charges : dict {chemical_symbol: formal_charge_in_units_of_e}
-        e.g. {'Na': +1, 'F': -1} for NaF, {'Ca': +2, 'F': -1} for CaF2.
-        Species not listed are treated as having zero charge (skipped).
-    sphere_radius : float [Angstrom]
-        Real-space cutoff radius for the lattice sum. Use
-        sphere_radius_convergence() above to verify it's large enough
-        for your structure before trusting the result. Default 30 Angstrom.
-    muon_position : (3,) array [cartesian] or None
-        If given, the muon's position (in cartesian coordinates) to compute its
-        contribution to the EFG at `site_position` and store it in the
-        'OmegaQmu' key of the returned dict, separate from the lattice
-        EFG tensor in 'EFGTensor' (to avoid double-counting).
-    exclude_indices : iterable of int
-        Indices (into `atoms`) to exclude from the bulk sum -- e.g. the
-        1-2 ions closest to a candidate muon site if you plan to add
-        their RELAXED positions back in via `extra_charges`.
-    extra_charges : list of (position[Angstrom], charge[e]) or None
-        Any additional point charges not in `atoms` -- e.g. relaxed
-        neighbour positions, or the muon itself if you want it folded
-        into a single combined tensor rather than kept separate.
-    gamma_sternheimer : float, optional
-        Sternheimer antishielding factor, V_total = V_lattice*(1+gamma).
-        Default 0.0 (no antishielding correction, i.e. the bare 
-        point-charge lattice sum).
-    verbose : bool
-        Print the number of charges summed over. Default False.
-
-    Returns
-    -------
-    dict with keys:
-        'Position' : (3,) array [Angstrom]
-            Cartesian position of the nucleus (same as `site_position`).
-        'Label' : str
-            Label for the atom/site, e.g. 'F1' or 'Na2'.
-        'Spin' : float
-            Nuclear spin quantum number I of the nucleus at `site_position`.
-        'Gamma' : float [rad/s/T]
-            Gyromagnetic ratio of the nucleus at `site_position`.
-        'ElectricQuadrupoleMoment' : float [m^2]
-            Nuclear electric quadrupole moment Q of the nucleus at `site_position`.
-        'EFGTensor' : (3,3) array [V/m^2]
-            Lattice EFG tensor at `site_position`, symmetric and (up to numerical noise) traceless.
-        'OmegaQmu' : float [rad/s] (only present if `mu_position` is not None)
-            Muon-induced EFG frequency omegaQmu for the nucleus at `site_position`, computed from the distance to the muon 
-            at `mu_position` and the nuclear quadrupole moment.
-    """
-    V_lattice = point_charge_EFG(
-        atoms, 
-        site_position, 
-        charges, 
-        sphere_radius=sphere_radius,
-        exclude_indices=exclude_indices,
-        extra_charges=extra_charges,
-        gamma_sternheimer=gamma_sternheimer,
-        verbose=verbose
-    )
-
-    d = {
-        'Position': np.asarray(site_position) * constants.ANGSTROM,
-        'Label': label,
-        'Spin': spin,
-        'Gamma': gamma,
-        'ElectricQuadrupoleMoment': quadrupole_moment,
-        'EFGTensor': V_lattice,
-    }
-    if muon_position is not None:
-        d_mu = np.linalg.norm(np.asarray(site_position) - np.asarray(muon_position)) * constants.ANGSTROM
-        d['OmegaQmu'] = get_omegaQ_mu(spin, quadrupole_moment, d_mu)
-    return d
-
-# %%
-def _single_charge_EFG(charge_position, site_position, charge):
-    """EFG tensor [V/m^2] at `site_position` due to a single point charge
-    `charge` [C] sitting at `charge_position` [m].
-
-    Parameters
-    ----------
-    charge_position : (3,) ndarray
-        Position of the source point charge [m].
-    site_position : (3,) ndarray
-        Position of the nucleus where the EFG is evaluated [m].
-    charge : float
-        Source charge [C].
-
-    Returns
-    -------
-    (3,3) ndarray
-        EFG tensor [V/m^2], symmetric and (up to numerical noise) traceless.
-    """
-    d = site_position - charge_position
-    r2 = np.dot(d, d)
-    r5 = r2 ** 2.5
-    V = charge / (4 * np.pi * constants.EPSILON0) * (3 * np.outer(d, d) - r2 * np.eye(3)) / r5
-    return V
+        print("=" * 65)
 
 
-def muon_point_charge_EFG(mu_position, site_position):
-    """The MUON's own contribution to the EFG at `site_position`, kept
-    separate from point_charge_EFG() (the lattice/environment part) to
-    match undi.py's split into 'EFGTensor' (lattice) vs 'OmegaQmu'
-    (muon) -- see undi.py's muon_induced_efg()."""
-    mu_position = np.asarray(mu_position) * constants.ANGSTROM
-    site_position = np.asarray(site_position) * constants.ANGSTROM
-    return _single_charge_EFG(mu_position, site_position, +1 * constants.ELEMENTARY_CHARGE)
+    def check_radius_convergence(
+        self,
+        position: Union[npt.ArrayLike, int],
+        coords_are_cartesian: bool = True,
+        quadrupole_moment: float = 1.0e-28,
+        gamma_sternheimer: Optional[float] = None,
+        sphere_radius_max: float = 100.0,
+        sphere_radius_step: float = 10.0,
+        conv_thr: float = 1e-3,
+        ax: Optional[matplotlib.axes.Axes] = None,
+        atol: float = 1e-3,
+    ) -> Tuple[list[float], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Evaluate how Vzz converges relative to real-space summation radius."""
+        # Resolve gamma: use override if provided, else fall back to instance default
+        gamma = self.gamma_sternheimer if gamma_sternheimer is None else gamma_sternheimer
+
+        cart_pos, frac_pos, probe_idx, probe_sym = get_site_info(
+            atoms=self.atoms,
+            position_or_index=position,
+            coords_are_cartesian=coords_are_cartesian,
+            atol=atol,
+        )
+
+        self.properties.update(
+            {
+                "probe_position": position,
+                "cartesian_position": cart_pos,
+                "fractional_position": frac_pos,
+                "probe_index": probe_idx,
+                "probe_symbol": probe_sym,
+                "gamma_sternheimer": gamma,
+            }
+        )
+
+        return sphere_radius_convergence(
+            atoms=self.atoms,
+            site_position=cart_pos,
+            charges=self.charges,
+            exclude_indices=self.exclude_indices,
+            quadrupole_moment=quadrupole_moment,
+            gamma_sternheimer=gamma,
+            conv_thr=conv_thr,
+            sphere_radius_step=sphere_radius_step,
+            sphere_radius_max=sphere_radius_max,
+            ax=ax,
+        )
