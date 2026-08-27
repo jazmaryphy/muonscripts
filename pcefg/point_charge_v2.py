@@ -1,8 +1,8 @@
 # %%
 import numpy as np
 from constants import constants
-from efg.utils import get_omegaQ_mu, quadrupole_frequencies
-from efg.lattice import get_site_labels, check_charges_cover_atoms
+from pcefg.utils import get_omegaQ_mu, quadrupole_frequencies
+from pcefg.lattice import get_site_labels, check_charges_cover_atoms
 
 # %%
 def _replicate_lattice(

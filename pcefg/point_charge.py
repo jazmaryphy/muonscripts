@@ -8,8 +8,8 @@ from ase import Atoms
 import numpy.typing as npt
 from numpy.typing import NDArray
 
-from efg.utils import get_omegaQ_mu, quadrupole_frequencies
-from efg.lattice import check_charges_cover_atoms, get_site_labels, get_site_info
+from pcefg.utils import get_omegaQ_mu, quadrupole_frequencies
+from pcefg.lattice import check_charges_cover_atoms, get_site_labels, get_site_info
 
 from constants.constants import ANGSTROM, ELEMENTARY_CHARGE, EPSILON0, H_PLANCK, MUON_GYROMAGNETIC_RATIO
 
