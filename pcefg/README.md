@@ -30,6 +30,7 @@ where for $i$-th quadrupolar nuclear site:
 - $V_{\alpha \beta}$ is the EFG tensor
 - $\hat{I}_{\alpha, \beta}$ are the nuclear spin operators.
 - $\gamma_\infty$ is the Sternheimer antishielding factor.
+- $e$ is elementary charge.
 
 Here $V_{\alpha\beta} \equiv \partial_{\alpha}\partial_{\beta} V(\mathbf{r})$, with $V(\mathbf{r})$ being the electrostatic potential evaluated at the nucleus. Notice that since the electric field is $\mathbf{E} = -\nabla V(\mathbf{r})$, the EFG tensor can also be expressed as $V_{\alpha\beta} = -\partial_{\alpha}E_{\beta}$.
 
