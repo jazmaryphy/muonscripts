@@ -13,7 +13,6 @@
 - **Quadrupole Coupling Utilities**: Calculates $V_{zz}$, $\eta$, and quadrupolar coupling constants ($\chi_Q$) for arbitrary spin $I > 1/2$ nuclei.
 
 ---
-
 ## Theoretical Background
 
 ### Model Hamiltonian
@@ -46,30 +45,31 @@ where $\rho(\mathbf{r})$ is the nuclear charge density.
 
 In an ionic crystal, the EFG at a particular site depends on the charge distribution of the surrounding ions. The simplest model treats the ions as stationary point charges located at lattice sites.
 
-Assuming a collection of stationary point charges $\rho(\mathbf{r}') = \sum_k q_k \delta(\mathbf{r}' - \mathbf{r}_k)$, substituting this into the electrostatic potential integral yields:
+Assuming a collection of stationary point charges $\rho(\mathbf{r}') = \sum_k q_i \delta(\mathbf{r}' - \mathbf{r}_i)$, substituting this into the electrostatic potential integral yields:
 
-$$V(\mathbf{r}_0) = \frac{1}{4\pi\varepsilon_0} \int d\mathbf{r}' \frac{\sum_k q_k \delta(\mathbf{r}' - \mathbf{r}_k)}{\lvert\mathbf{r}_0 - \mathbf{r}'\rvert} = \frac{1}{4\pi\varepsilon_0} \sum_k \frac{q_k}{\lvert\mathbf{r}_0 - \mathbf{r}_k\rvert} = \frac{1}{4\pi\varepsilon_0} \sum_k \frac{q_k}{\lvert \mathbf{x}_k \rvert}$$
-
-
-where $q_{k}$ and $\mathbf{x}_k = \mathbf{r}_0 - \mathbf{r}_k$ are the charge and position vector of the $k$-th ion located at distance $r_k = \lvert \mathbf{x}_k \rvert$ from the origin at the site of interest ($\mathbf{r}_0$).
+$$V(\mathbf{r}_0) = \frac{1}{4\pi\varepsilon_0} \int d\mathbf{r}' \frac{\sum_k q_i \delta(\mathbf{r}' - \mathbf{r}_i)}{\lvert\mathbf{r}_0 - \mathbf{r}'\rvert} = \frac{1}{4\pi\varepsilon_0} \sum_i \frac{q_i}{\lvert\mathbf{r}_0 - \mathbf{r}_i\rvert} = \frac{1}{4\pi\varepsilon_0} \sum_i \frac{q_i}{\lvert \mathbf{x}_i \rvert}$$
 
 
-The EFG tensor components $V_{ij} = \partial^2 V / \partial x_i \partial x_j$ at the site of interest due to this periodic array of point charges are given by:
-
-$$V_{ij} = \frac{1}{4\pi\varepsilon_0} \sum_k q_k \left( \frac{3x_{ik}x_{jk}-\delta_{ij}r_k^2}{r_k^5} \right), \quad i, j = 1, 2, 3,$$
+where $q_{i}$ and $\mathbf{x}_i = \mathbf{r}_0 - \mathbf{r}_i$ are the charge and displacement vector of the site $i$-th located at distance $r_i = \lvert \mathbf{x}_i \rvert$ from the the site of interest ($\mathbf{r}_0$).
 
 
-where $\delta_{ij}$ is the Kronecker delta and $r_k = \lvert \mathbf{x}_k \rvert$. 
+The EFG tensor components $V_{\alpha\beta} = \partial^2 V / \partial x_\alpha \partial x_\beta$ at the site of interest due to this periodic array of point charges are given by:
+
+$$V_{\alpha\beta} = \frac{1}{4\pi\varepsilon_0} \sum_i q_i \left( \frac{3x_{i\alpha}x_{i\beta}-r_i^2\delta_{\alpha\beta}}{r_i^5} \right), \quad \alpha, \beta = x, y, z,$$
 
 
-$$r_{k} = \lvert \mathbf{x}_{k} \rvert \equiv \sqrt{x_{1k}^2 + x_{2k}^2 + x_{3k}^2}.$$
+$$r_{i} = \lvert \mathbf{x}_{i} \rvert \equiv \sqrt{x_{i1}^2 + x_{i2}^2 + x_{i3}^2} \equiv \sqrt{x_{i}^2 + y_{i}^2 + z_{i}^2}.$$
+
+
+where $\delta_{\alpha\beta}$ is the Kronecker delta, $r_i = \lvert \mathbf{x}_i \rvert$ and the sum runs over all charge sites within a sphere of chosen radius.
+
 
 
 ### Sternheimer Antishielding Correction
 
 To account for the polarization of the core electronic cloud surrounding the probe nucleus, the lattice EFG is scaled using the Sternheimer antishielding factor $\gamma_\infty$:
 
-$$V_{ij}^{\mathrm{total}} = (1-\gamma_\infty)\, V_{ij}^{\mathrm{lattice}}$$
+$$V_{\alpha\beta}^{\mathrm{total}} = (1-\gamma_\infty)\, V_{\alpha\beta}^{\mathrm{lattice}}$$
 
 
 ### Calculated Properties
@@ -84,10 +84,9 @@ $$\eta = \frac{V_{xx} - V_{yy}}{V_{zz}}, \qquad \chi_Q = \frac{e Q V_{zz}}{h}$$
 
 $$\nu_z = \frac{3 e Q V_{zz}}{2I(2I - 1)h}, \qquad \nu_Q = \left\lvert \nu_z \sqrt{1 + \frac{\eta^2}{3}} \right\rvert$$
 
-
 $$\qquad \nu_x = \frac{1}{2}\nu_z(\eta - 1), \qquad \nu_y = -\frac{1}{2}\nu_z(\eta + 1)$$
-
 ---
+
 
 ## Installation
 
